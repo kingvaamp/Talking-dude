@@ -8,6 +8,9 @@ import threading
 import time
 import difflib
 import asyncio
+import socket
+import qrcode
+import io
 import pyaudio
 from deepgram import (
     DeepgramClient,
@@ -85,6 +88,26 @@ def save_settings(data):
             json.dump(existing, f, indent=2)
     except Exception:
         pass
+
+def get_local_ip() -> str:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+@st.cache_data
+def generate_qr_bytes(url: str) -> bytes:
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=8, border=3)
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#1a1a2e", back_color="#f0f0f5")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return bytes(buf.getvalue())
 
 _persisted = load_settings()
 
@@ -682,6 +705,23 @@ DG_MODEL = DG_MODEL_OPTIONS[selected_model_label]
 if selected_model_label != _saved_model_label:
     save_settings({"dg_model_label": selected_model_label})
 
+# ── iPhone Access ─────────────────────────────────────────────────────
+st.sidebar.markdown("---")
+
+if "show_qr" not in st.session_state:
+    st.session_state.show_qr = False
+
+if st.sidebar.button("📱 iPhone Access"):
+    st.session_state.show_qr = not st.session_state.show_qr
+
+if st.session_state.show_qr:
+    ip = get_local_ip()
+    url = f"http://{ip}:8501"
+    if st.session_state.get("_last_qr_ip") != ip:
+        generate_qr_bytes.clear()
+        st.session_state["_last_qr_ip"] = ip
+    st.sidebar.image(generate_qr_bytes(url), width=180, caption=url)
+
 # Glossary logic removed per user request
 glossary_list       = []
 glossary_trans_list = []
@@ -743,11 +783,14 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
         def on_message(self, result, **kwargs):
             nonlocal packets_sent
             try:
-                # v3 structure parsing for LiveResultResponse object
                 transcript = result.channel.alternatives[0].transcript
-                print(f"DEBUG: DG Result: '{transcript}' (final: {result.is_final})") # Terminal heartbeat
                 if transcript:
+                    STATUS_Q.put(f"📝 Reçu: '{transcript[:20]}...'")
                     transcript_q.put((transcript, result.is_final))
+                else:
+                    # Occasional heartbeat for empty transcripts to confirm connection is alive
+                    if packets_sent % 100 == 0:
+                        STATUS_Q.put("⌛ En attente de parole...")
             except Exception as e:
                 print(f"DEBUG: Error parsing DG message: {e}")
 
@@ -794,18 +837,19 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
                 data = audio_q.get(timeout=0.1)
                 dg_connection.send(data)
                 packets_sent += 1
-                if packets_sent % 20 == 0:
-                    STATUS_Q.put(f"⚡ Envoi audio : {packets_sent} paquets")
+                if packets_sent % 50 == 0:
+                    STATUS_Q.put(f"⚡ Envoi : {packets_sent} paquets OK")
             except queue.Empty:
                 continue
             except Exception as e:
-                STATUS_Q.put(f"❌ Erreur envoi: {e}")
+                STATUS_Q.put(f"❌ Erreur envoi Deepgram: {e}")
                 break
 
+        STATUS_Q.put("🛑 Arrêt du flux Deepgram")
         dg_connection.finish()
 
     except Exception as e:
-        STATUS_Q.put(f"❌ Deepgram critique: {e}")
+        STATUS_Q.put(f"❌ Échec critique Deepgram: {e}")
 
 # No longer need run_dg_async_bridge as worker is sync-style for robust threading
 
@@ -861,13 +905,17 @@ def producer_worker(bh_index, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
                 
                 # Critical Debug: Warn if the audio is completely silent
                 if peak < 0.0001:
-                    if int(time.time()) % 10 == 0:
-                        STATUS_Q.put("⚠️ Audio très faible ou silencieux détecté")
-            except Exception:
-                continue
+                    if int(time.time()) % 15 == 0:
+                        STATUS_Q.put("⚠️ Pas de signal audio détecté (vérifie BlackHole)")
+                else:
+                    if int(time.time()) % 60 == 0: # Moins fréquent pour ne pas polluer
+                        STATUS_Q.put("🎤 Capture en cours...")
+            except Exception as e:
+                STATUS_Q.put(f"❌ Erreur lecture audio: {e}")
+                break
 
     except Exception as e:
-        STATUS_Q.put(f"❌ Producteur audio: {e}")
+        STATUS_Q.put(f"❌ Producteur audio critique: {e}")
     finally:
         with PA_LOCK:
             if stream:

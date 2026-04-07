@@ -6,15 +6,16 @@ import signal
 import sys
 
 # Configuration
-STREAMLIT_FILE = "Talking_Dude_v3.py"
+STREAMLIT_FILE = "Talking_Dude_v4.py"
 PORT = 8501
 
 def start_streamlit():
     """Lancer le serveur Streamlit en arrière-plan."""
     print(f"🚀 Lancement de Streamlit ({STREAMLIT_FILE})...")
-    # Utiliser python3 -m streamlit pour plus de robustesse
+    # Utiliser sys.executable pour plus de robustesse
+    python_exe = sys.executable
     return subprocess.Popen([
-        "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3.11", "-m", "streamlit", "run", STREAMLIT_FILE,
+        python_exe, "-m", "streamlit", "run", STREAMLIT_FILE,
         "--server.port", str(PORT),
         "--server.headless", "true",
         "--server.runOnSave", "false",
