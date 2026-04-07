@@ -1,0 +1,1364 @@
+import streamlit as st
+import html as _html
+import json
+import os
+import re
+import queue
+import threading
+import time
+import difflib
+import asyncio
+import pyaudio
+from deepgram import (
+    DeepgramClient,
+    DeepgramClientOptions,
+    LiveTranscriptionEvents,
+    LiveOptions,
+)
+
+
+st.set_page_config(page_title="Talking Dude — Live Interpreter", page_icon="🎙️", layout="wide", initial_sidebar_state="expanded")
+
+# audioop was removed in Python 3.13 — provide a pure-Python fallback
+try:
+    import audioop
+    _HAS_AUDIOOP = True
+except ImportError:
+    _HAS_AUDIOOP = False
+
+def _to_mono(raw: bytes) -> bytes:
+    """Stereo int16 → mono int16 (pure Python fallback)."""
+    if _HAS_AUDIOOP:
+        return audioop.tomono(raw, 2, 1, 1)
+    import array as _arr
+    samps = _arr.array('h', raw)
+    mono  = _arr.array('h', ((samps[i] + samps[i + 1]) // 2 for i in range(0, len(samps), 2)))
+    return mono.tobytes()
+
+def _ratecv(raw: bytes, in_rate: int, out_rate: int, state):
+    """Sample-rate conversion int16 mono (pure Python fallback). Returns (bytes, state)."""
+    if _HAS_AUDIOOP:
+        return audioop.ratecv(raw, 2, 1, in_rate, out_rate, state)
+    import array as _arr
+    samps  = _arr.array('h', raw)
+    n_in   = len(samps)
+    n_out  = int(n_in * out_rate / in_rate)
+    result = _arr.array('h')
+    for i in range(n_out):
+        pos  = i * in_rate / out_rate
+        idx  = int(pos)
+        frac = pos - idx
+        a    = samps[idx]         if idx     < n_in else 0
+        b    = samps[idx + 1]     if idx + 1 < n_in else a
+        result.append(max(-32768, min(32767, int(a + frac * (b - a)))))
+    return result.tobytes(), None  # stateless fallback
+
+try:
+    from deep_translator import GoogleTranslator
+except ImportError:
+    st.error("❌ `deep-translator` manquant. Lance : `pip install deep-translator`")
+    st.stop()
+
+try:
+    from openai import OpenAI as GroqOpenAI
+except ImportError:
+    st.error("❌ `openai` manquant. Lance : `pip install openai`")
+    st.stop()
+
+# ── Settings persistence ──────────────────────────────────────────────────────
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_settings(data):
+    try:
+        existing = load_settings()
+        existing.update(data)
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(existing, f, indent=2)
+    except Exception:
+        pass
+
+_persisted = load_settings()
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+# ── Session state init ─────────────────────────────────────────────────────────
+def _init_ss(key, factory):
+    if key not in st.session_state:
+        st.session_state[key] = factory()
+
+_init_ss("AUDIO_QUEUE",       lambda: queue.Queue())
+_init_ss("TRANSCRIPT_QUEUE",  lambda: queue.Queue())
+_init_ss("TRANSLATION_QUEUE", lambda: queue.Queue(maxsize=1))
+_init_ss("UI_UPDATE_QUEUE",   lambda: queue.Queue())
+_init_ss("STATUS_QUEUE",      lambda: queue.Queue())
+_init_ss("SUMMARY_QUEUE",     lambda: queue.Queue())
+_init_ss("STOP_EVENT",        threading.Event)
+_init_ss("interim_text",      lambda: "")
+_init_ss("history",           list)
+_init_ss("status_dict",       lambda: {"running": False, "msg": "Prêt — appuie sur Start."})
+_init_ss("current_sentence",  lambda: {"original": "", "translation": "", "id": 0.0})
+_init_ss("audio_level",       lambda: 0.0)
+_init_ss("summary",           lambda: "")
+_init_ss("summary_loading",   lambda: False)
+_init_ss("summary_in_progress", lambda: False)
+_init_ss("summary_start_time", lambda: 0.0)
+_init_ss("current_page",      lambda: "main")  # "main" ou "summary"
+_init_ss("sidebar_hidden", lambda: False)
+
+
+# ── Theme config ──────────────────────────────────────────────────────────────
+_init_ss("theme", lambda: _persisted.get("theme", "dark"))
+
+def toggle_theme():
+    new_theme = "light" if st.session_state.theme == "dark" else "dark"
+    st.session_state.theme = new_theme
+    save_settings({"theme": new_theme})
+
+if st.session_state.theme == "dark":
+    theme_vars = """
+        --bg-main: #080b10;
+        --text-main: #c8d0e0;
+        --header-bg: rgba(8, 11, 16, 0.95);
+        --live-bg-1: rgba(10,16,28,0.95);
+        --live-bg-2: rgba(16,22,38,0.85);
+        --live-border: rgba(0, 200, 255, 0.15);
+        --live-title: #00c8ff;
+        --live-glow: 0 0 10px #ff2255, 0 0 20px rgba(255,34,85,0.4);
+        --live-text: #f0f4ff;
+        --ghost-text: 0.35;
+        --trans-text: #5bb8ff;
+        --hist-bg: rgba(255,255,255,0.025);
+        --hist-hover: rgba(255,255,255,0.04);
+        --hist-border: rgba(0, 200, 255, 0.35);
+        --hist-orig: #d0d8ee;
+        --hist-trans: #4a9fd4;
+        --btn-bg: rgba(255,255,255,0.04);
+        --btn-border: rgba(255,255,255,0.08);
+        --btn-hover: rgba(0, 200, 255, 0.12);
+        --btn-hover-border: rgba(0, 200, 255, 0.4);
+        --btn-shadow: none;
+        --status-bg: rgba(255,255,255,0.04);
+        --sb-bg: rgba(8,11,16,0.98);
+        --sb-border: rgba(255,255,255,0.05);
+        --subtitle: #4a5570;
+        --wv-bg-grad: linear-gradient(180deg,rgba(0,200,255,0.04) 0%,rgba(0,40,80,0.12) 100%);
+        --input-bg: rgba(255,255,255,0.05);
+        --input-border: rgba(255,255,255,0.1);
+        --input-text: #f0f4ff;
+        --label-text: #c8d0e0;
+    """
+else:
+    theme_vars = """
+        --bg-main: #f8fafc;
+        --text-main: #334155;
+        --header-bg: rgba(248, 250, 252, 0.95);
+        --live-bg-1: rgba(255,255,255,0.95);
+        --live-bg-2: rgba(241,245,249,0.85);
+        --live-border: rgba(2, 132, 199, 0.15);
+        --live-title: #0284c7;
+        --live-glow: 0 0 10px #ef4444, 0 0 20px rgba(239,68,68,0.4);
+        --live-text: #0f172a;
+        --ghost-text: 0.45;
+        --trans-text: #0369a1;
+        --hist-bg: rgba(255,255,255,1);
+        --hist-hover: rgba(241,245,249,1);
+        --hist-border: rgba(2, 132, 199, 0.35);
+        --hist-orig: #1e293b;
+        --hist-trans: #334155;
+        --btn-bg: #ffffff;
+        --btn-border: #94a3b8;
+        --btn-hover: rgba(2, 132, 199, 0.08);
+        --btn-hover-border: rgba(2, 132, 199, 0.6);
+        --btn-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --status-bg: rgba(241,245,249,1);
+        --sb-bg: rgba(248,250,252,0.98);
+        --sb-border: rgba(0,0,0,0.05);
+        --subtitle: #64748b;
+        --wv-bg-grad: linear-gradient(180deg,rgba(2,132,199,0.04) 0%,rgba(2,132,199,0.12) 100%);
+        --input-bg: #ffffff;
+        --input-border: #cbd5e1;
+        --input-text: #0f172a;
+        --label-text: #334155;
+    """
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
+st.markdown(f"""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    :root {{
+        {theme_vars}
+    }}
+
+    html, body, [data-testid="stAppViewContainer"] {{
+        background-color: var(--bg-main);
+        color: var(--text-main);
+        font-family: 'Space Grotesk', sans-serif;
+    }}
+
+    [data-testid="stMainBlockContainer"] {{
+        padding-top: 3.5rem !important;
+    }}
+    [id="stHeader"] {{
+        background-color: transparent !important;
+    }}
+
+    .stAppHeader {{
+        background-color: var(--header-bg) !important;
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--live-border);
+    }}
+
+    /* ── Live Box ── */
+    .live-box {{
+        background: linear-gradient(145deg, var(--live-bg-1) 0%, var(--live-bg-2) 100%);
+        backdrop-filter: blur(24px);
+        border-radius: 18px;
+        padding: 28px 32px;
+        border: 1px solid var(--live-border);
+        box-shadow:
+            0 8px 32px rgba(0,0,0,0.1),
+            0 0 0 1px rgba(255,255,255,0.03),
+            inset 0 1px 0 rgba(255,255,255,0.05);
+        margin-bottom: 24px;
+        position: relative;
+        overflow: hidden;
+    }}
+    .live-box::before {{
+        content: "";
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, var(--live-title), transparent);
+        opacity: 0.6;
+    }}
+
+    .live-title {{
+        color: var(--live-title);
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: 0.7rem;
+        letter-spacing: 3px;
+        margin-bottom: 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }}
+    .live-dot {{
+        width: 7px;
+        height: 7px;
+        background: #ff2255;
+        border-radius: 50%;
+        box-shadow: var(--live-glow);
+        animation: pulse 1.8s ease-in-out infinite;
+        display: inline-block;
+    }}
+    @keyframes pulse {{
+        0%, 100% {{ transform: scale(1); opacity: 1; }}
+        50% {{ transform: scale(1.4); opacity: 0.4; }}
+    }}
+
+    .live-text {{
+        font-size: 1.55rem;
+        font-weight: 600;
+        line-height: 1.5;
+        color: var(--live-text);
+        min-height: 2.5rem;
+        letter-spacing: -0.01em;
+    }}
+    .ghost-text {{
+        opacity: var(--ghost-text);
+        font-style: italic;
+        font-weight: 400;
+    }}
+
+    .translation-text {{
+        font-size: 1.2rem;
+        font-weight: 400;
+        color: var(--trans-text);
+        margin-top: 18px;
+        padding-top: 18px;
+        border-top: 1px solid var(--sb-border);
+        font-style: italic;
+        line-height: 1.5;
+        letter-spacing: 0.01em;
+    }}
+
+    /* ── History Cards ── */
+    .history-card {{
+        background: var(--hist-bg);
+        border-radius: 12px;
+        padding: 16px 20px;
+        margin-bottom: 14px;
+        border-left: 3px solid var(--hist-border);
+        transition: all 0.2s ease;
+        position: relative;
+    }}
+    .history-card:hover {{
+        background: var(--hist-hover);
+        border-left-color: var(--live-title);
+        transform: translateX(3px);
+    }}
+    .history-original {{
+        font-size: 1rem;
+        color: var(--hist-orig);
+        margin-bottom: 6px;
+        line-height: 1.5;
+    }}
+    .history-translation {{
+        font-size: 0.95rem;
+        color: var(--hist-trans);
+        font-style: italic;
+        line-height: 1.5;
+        opacity: 0.85;
+    }}
+
+    /* ── Buttons ── */
+    .stButton > button,
+    .stDownloadButton > button {{
+        border-radius: 10px;
+        border: 1px solid var(--btn-border);
+        background: var(--btn-bg) !important;
+        color: var(--text-main) !important;
+        font-weight: 600;
+        font-family: 'Space Grotesk', sans-serif;
+        letter-spacing: 0.02em;
+        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        backdrop-filter: blur(8px);
+        box-shadow: var(--btn-shadow);
+    }}
+    .stButton > button:disabled,
+    .stDownloadButton > button:disabled {{
+        background: var(--btn-bg) !important;
+        border-color: var(--btn-border) !important;
+        color: var(--text-main) !important;
+        opacity: 0.5;
+        cursor: not-allowed;
+    }}
+    .stButton > button:hover,
+    .stDownloadButton > button:hover,
+    .stButton > button:active,
+    .stDownloadButton > button:active,
+    .stButton > button:focus,
+    .stDownloadButton > button:focus {{
+        background: var(--btn-hover) !important;
+        border-color: var(--btn-hover-border) !important;
+        color: var(--live-title) !important;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        transform: translateY(-2px);
+        outline: none !important;
+    }}
+
+    /* ── Status ── */
+    .stInfo, .stSuccess, .stError, .stWarning {{
+        background: var(--status-bg) !important;
+        border-radius: 10px !important;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.85rem !important;
+    }}
+    .stSuccess {{ border-color: rgba(0,255,127,0.25) !important; }}
+    .stError   {{ border-color: rgba(255,34,85,0.25) !important; }}
+
+    /* ── Sidebar ── */
+    [data-testid="stSidebar"] {{
+        background: var(--sb-bg) !important;
+        border-right: 1px solid var(--sb-border);
+    }}
+
+    /* ── Header ── */
+    .app-header {{
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 6px;
+    }}
+    .app-title {{
+        font-size: 1.6rem;
+        font-weight: 700;
+        color: var(--live-text);
+        letter-spacing: -0.03em;
+    }}
+    .app-subtitle {{
+        font-size: 0.85rem;
+        color: var(--subtitle);
+        font-family: 'JetBrains Mono', monospace;
+    }}
+
+    
+    /* ── Streamlit Widgets Overrides ── */
+    [data-baseweb="select"] > div,
+    [data-baseweb="input"] > div {{
+        background-color: var(--input-bg) !important;
+        border-color: var(--input-border) !important;
+        color: var(--input-text) !important;
+    }}
+    
+    [data-baseweb="select"] span,
+    [data-baseweb="base-input"] {{
+        background-color: transparent !important;
+        color: var(--input-text) !important;
+    }}
+
+    [data-baseweb="input"] input {{
+        background-color: transparent !important;
+        color: var(--input-text) !important;
+        -webkit-text-fill-color: var(--input-text) !important;
+    }}
+    
+    .stSelectbox label p,
+    .stTextInput label p {{
+        color: var(--label-text) !important;
+    }}
+
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {{
+        color: var(--text-main) !important;
+    }}
+
+    div[data-testid="stSubheader"] {{
+        color: var(--subtitle) !important;
+        font-size: 0.8rem !important;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        font-weight: 600;
+        margin-top: 8px;
+    }}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Global Lock for PyAudio Stability ──────────────────────────────────────────
+if "PA_LOCK" not in st.session_state:
+    st.session_state.PA_LOCK = threading.Lock()
+PA_LOCK = st.session_state.PA_LOCK
+
+AUDIO_QUEUE       = st.session_state.AUDIO_QUEUE
+
+TRANSCRIPT_QUEUE  = st.session_state.TRANSCRIPT_QUEUE
+TRANSLATION_QUEUE = st.session_state.TRANSLATION_QUEUE
+UI_UPDATE_QUEUE   = st.session_state.UI_UPDATE_QUEUE
+STATUS_QUEUE      = st.session_state.STATUS_QUEUE
+STOP_EVENT        = st.session_state.STOP_EVENT
+
+# ── Header ────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="app-header">
+    <span class="app-title">🎙️ Talking Dude</span>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Audio detection ───────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False)
+def get_audio_devices_cached():
+    """Returns a dictionary of {name: index} for available input devices (cached)."""
+    with PA_LOCK:
+        p = pyaudio.PyAudio()
+        devices = {}
+        try:
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                if info["maxInputChannels"] > 0:
+                    devices[info["name"]] = i
+            return devices
+        finally:
+            p.terminate()
+
+def get_audio_devices():
+    return get_audio_devices_cached()
+
+def find_blackhole_index():
+    """Find the BlackHole audio device index."""
+    devices = get_audio_devices()
+    for name, idx in devices.items():
+        if "blackhole" in name.lower():
+            return idx
+    return None
+
+
+# ── Audio waveform visualiser (defined early — used inside sidebar) ─────────────
+def _audio_waveform_html(level: float) -> str:
+    """Return an HTML/CSS animated waveform bar visualizer for the sidebar."""
+    import math
+    level = min(1.0, max(0.0, level))
+    num_bars = 30
+    max_h = 38   # px
+    min_h = 3    # px
+    bars = []
+    for i in range(num_bars):
+        # Bell-curve shape: tall in centre, shorter at edges
+        edge_factor = 1.0 - 0.45 * abs((i - num_bars / 2) / (num_bars / 2)) ** 1.4
+        sine_factor = 0.70 + 0.30 * abs(math.sin(i * 0.53 + 1.1))
+        h = max(min_h, int((min_h + (max_h - min_h) * level * edge_factor * sine_factor)))
+        delay  = round((i * 0.048) % 1.1, 3)
+        speed  = round(0.32 + 0.22 * abs(math.sin(i * 0.71)), 3)
+        bright = int(180 + 75 * edge_factor)
+        colour = f"rgb(0,{bright},255)"
+        bars.append(
+            f'<span class="wb" style="height:{h}px;--d:{delay}s;--spd:{speed}s;--c:{colour}"></span>'
+        )
+    bars_html = "".join(bars)
+    return f"""
+<style>
+.wv-wrap{{margin:10px 0 4px;padding:0;}}
+.wv-lbl{{font-size:0.62rem;color:#3d4d66;text-transform:uppercase;
+         letter-spacing:2px;margin-bottom:7px;font-family:'Space Grotesk',sans-serif;}}
+.wv{{display:flex;align-items:flex-end;gap:2px;height:46px;
+     background:var(--wv-bg-grad);
+     border-radius:8px;padding:5px 6px;
+     border:1px solid rgba(0,200,255,0.10);box-sizing:border-box;}}
+.wb{{flex:1;min-width:1px;border-radius:2px 2px 1px 1px;
+     background:linear-gradient(180deg,var(--c,#00c8ff) 0%,rgba(0,80,200,0.6) 100%);
+     box-shadow:0 0 5px rgba(0,200,255,0.20);
+     transform-origin:bottom center;
+     animation:wvb var(--spd,0.45s) ease-in-out infinite alternate;
+     animation-delay:var(--d,0s);}}
+@keyframes wvb{{
+  0%{{transform:scaleY(0.18);opacity:0.45;}}
+  100%{{transform:scaleY(1.0);opacity:0.95;}}
+}}
+</style>
+<div class="wv-wrap">
+  <div class="wv-lbl">Niveau audio</div>
+  <div class="wv">{bars_html}</div>
+</div>
+"""
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.markdown("<br>", unsafe_allow_html=True)
+col_thm = st.sidebar.columns([1])[0]
+theme_icon = "🌞 Mode Clair" if st.session_state.theme == "dark" else "🌙 Mode Sombre"
+col_thm.button(theme_icon, on_click=toggle_theme, use_container_width=True)
+st.sidebar.markdown("---")
+
+st.sidebar.header("🌍 Langues")
+
+source_lang_map = {"en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE", "it": "it-IT", "pt": "pt-BR", "ar": "ar"}
+target_lang_map = {"fr": "fr", "en": "en", "es": "es", "de": "de", "it": "it", "pt": "pt", "ar": "ar"}
+
+_src_keys  = list(source_lang_map.keys())
+_tgt_keys  = list(target_lang_map.keys())
+_saved_src = _persisted.get("source_lang", "en")
+_saved_tgt = _persisted.get("target_lang", "fr")
+_src_idx   = _src_keys.index(_saved_src) if _saved_src in _src_keys else 0
+_tgt_idx   = _tgt_keys.index(_saved_tgt) if _saved_tgt in _tgt_keys else 0
+
+source_display   = st.sidebar.selectbox("Langue source (audio)", _src_keys, index=_src_idx)
+target_display   = st.sidebar.selectbox("Langue cible (traduction)", _tgt_keys, index=_tgt_idx)
+source_lang_code = source_lang_map[source_display]
+target_lang_code = target_lang_map[target_display]
+
+if source_display != _saved_src or target_display != _saved_tgt:
+    save_settings({"source_lang": source_display, "target_lang": target_display})
+
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎤 Audio")
+
+devices_dict = get_audio_devices()
+device_names = list(devices_dict.keys())
+
+# Default to BlackHole if present, else first available
+bh_idx = find_blackhole_index()
+default_dev_name = None
+if bh_idx is not None:
+    for name, idx in devices_dict.items():
+        if idx == bh_idx:
+            default_dev_name = name
+            break
+if not default_dev_name and device_names:
+    default_dev_name = device_names[0]
+
+_saved_device = _persisted.get("audio_device", default_dev_name)
+_dev_idx = device_names.index(_saved_device) if _saved_device in device_names else 0
+
+selected_device_name = st.sidebar.selectbox("Entrée audio", device_names, index=_dev_idx)
+SELECTED_DEVICE_INDEX = devices_dict[selected_device_name]
+
+if selected_device_name != _saved_device:
+    save_settings({"audio_device": selected_device_name})
+
+st.sidebar.info(f"Appareil ID: {SELECTED_DEVICE_INDEX}")
+
+if st.session_state.status_dict["running"]:
+    st.sidebar.markdown(
+        _audio_waveform_html(st.session_state.get("audio_level", 0.0)),
+        unsafe_allow_html=True
+    )
+
+
+st.sidebar.markdown("---")
+st.sidebar.header("🤖 Résumé IA")
+
+if "_groq_key" not in st.session_state:
+    st.session_state._groq_key = _persisted.get("groq_key", "")
+
+groq_key_input = st.sidebar.text_input(
+    "Groq API Key",
+    type="password",
+    value=st.session_state._groq_key,
+    placeholder="gsk_...",
+    help="Gratuit sur console.groq.com",
+)
+if groq_key_input != st.session_state._groq_key:
+    save_settings({"groq_key": groq_key_input})
+    st.session_state._groq_key = groq_key_input
+
+GROQ_API_KEY = st.session_state._groq_key
+
+if GROQ_API_KEY:
+    st.sidebar.success("✅ Groq configuré.")
+else:
+    st.sidebar.warning("⚠️ Clé Groq requise pour les résumés.")
+
+# Langue du résumé
+_sum_lang_options = {"Français": "français", "English": "english", "Español": "español"}
+_saved_sum_lang = _persisted.get("summary_lang", "Français")
+_sum_lang_idx = list(_sum_lang_options.keys()).index(_saved_sum_lang) if _saved_sum_lang in _sum_lang_options else 0
+selected_sum_lang_label = st.sidebar.selectbox("Langue du résumé", list(_sum_lang_options.keys()), index=_sum_lang_idx)
+SUMMARY_LANG = _sum_lang_options[selected_sum_lang_label]
+if selected_sum_lang_label != _saved_sum_lang:
+    save_settings({"summary_lang": selected_sum_lang_label})
+
+# Bouton Summarize — defined here, rendered in the main page
+def go_to_summary():
+    if not st.session_state.history:
+        STATUS_QUEUE.put("⚠️ Aucune transcription à résumer.")
+        return
+    if not GROQ_API_KEY:
+        STATUS_QUEUE.put("⚠️ Entre ta clé Groq dans la barre latérale.")
+        return
+    st.session_state.current_page = "summary"
+    st.session_state.summary = ""
+    st.session_state.summary_loading = True
+    st.session_state.summary_in_progress = False
+    generate_summary_groq()
+
+
+st.sidebar.markdown("---")
+st.sidebar.header("🔑 APIs")
+
+if "_dg_key" not in st.session_state:
+    saved_key = _persisted.get("dg_key", "")
+    st.session_state._dg_key = saved_key
+
+dg_key_input = st.sidebar.text_input(
+    "Deepgram API Key",
+    type="password",
+    value=st.session_state._dg_key,
+    placeholder="Colle ta clé ici...",
+    help="Crée un compte gratuit sur console.deepgram.com — $200 de crédits offerts",
+)
+if dg_key_input != st.session_state._dg_key:
+    save_settings({"dg_key": dg_key_input})
+    st.session_state._dg_key = dg_key_input
+
+DG_API_KEY = st.session_state._dg_key
+
+if not DG_API_KEY:
+    st.sidebar.warning("⚠️ Clé Deepgram requise.")
+else:
+    st.sidebar.success("✅ Deepgram configuré.")
+
+# Model selector
+DG_MODEL_OPTIONS = {
+    "nova-2 (Général — recommandé)": "nova-2",
+    "nova-2-medical (Médical)": "nova-2-medical",
+    "nova-2-meeting (Réunions)": "nova-2-meeting",
+    "enhanced (Précis)": "enhanced",
+    "base (Rapide)": "base",
+}
+_saved_model_label = _persisted.get("dg_model_label", list(DG_MODEL_OPTIONS.keys())[0])
+_model_idx = list(DG_MODEL_OPTIONS.keys()).index(_saved_model_label) if _saved_model_label in DG_MODEL_OPTIONS else 0
+selected_model_label = st.sidebar.selectbox("Modèle Deepgram", list(DG_MODEL_OPTIONS.keys()), index=_model_idx)
+DG_MODEL = DG_MODEL_OPTIONS[selected_model_label]
+if selected_model_label != _saved_model_label:
+    save_settings({"dg_model_label": selected_model_label})
+
+# Glossary logic removed per user request
+glossary_list       = []
+glossary_trans_list = []
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+
+def apply_glossary(text, glossary_array):
+    if not text or not glossary_array:
+        return text
+    refined = text
+    for term in glossary_array:
+        target = term.split("(")[0].strip()
+        if not target:
+            continue
+        pattern = re.compile(re.escape(target), re.IGNORECASE)
+        refined = pattern.sub(term, refined)
+    return refined
+
+_CMP_STRIP = str.maketrans("", "", ".,!?;:\"'()-[]")
+
+def _cmp(word):
+    return word.lower().translate(_CMP_STRIP)
+
+def find_new_words(committed_text, new_transcript):
+    committed_text = committed_text.strip()
+    new_transcript = new_transcript.strip()
+    if not committed_text:
+        return new_transcript
+    if not new_transcript:
+        return ""
+    c_words = committed_text.split()
+    n_words = new_transcript.split()
+    max_check = min(len(c_words), len(n_words), 40)
+    for overlap in range(max_check, 1, -1):
+        c_tail = " ".join(_cmp(w) for w in c_words[-overlap:])
+        n_head = " ".join(_cmp(w) for w in n_words[:overlap])
+        if difflib.SequenceMatcher(None, c_tail, n_head).ratio() >= 0.70:
+            return " ".join(n_words[overlap:])
+    return new_transcript
+
+def _is_sentence_end(text):
+    t = text.rstrip()
+    return bool(t) and t[-1] in ".?!"
+
+# ── Deepgram streaming worker ──────────────────────────────────────────────────
+# ── Deepgram streaming worker ──────────────────────────────────────────────────
+def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STATUS_Q, stop_event):
+    """Sync-style connection for stability in multi-threaded environment."""
+    try:
+        # Sync-style connection for stability
+        config = DeepgramClientOptions(options={"keepalive": "true"})
+        client = DeepgramClient(api_key, config)
+        dg_connection = client.listen.websocket.v("1") # Modern WebSocket interface
+
+        packets_sent = 0
+
+        def on_message(self, result, **kwargs):
+            nonlocal packets_sent
+            try:
+                # v3 structure parsing for LiveResultResponse object
+                transcript = result.channel.alternatives[0].transcript
+                print(f"DEBUG: DG Result: '{transcript}' (final: {result.is_final})") # Terminal heartbeat
+                if transcript:
+                    transcript_q.put((transcript, result.is_final))
+            except Exception as e:
+                print(f"DEBUG: Error parsing DG message: {e}")
+
+        def on_metadata(self, metadata, **kwargs):
+            STATUS_Q.put("✅ Deepgram connecté & prêt")
+
+        def on_speech_started(self, speech_started, **kwargs):
+            STATUS_Q.put("🎙️ Voix détectée...")
+
+        def on_error(self, error, **kwargs):
+            STATUS_Q.put(f"❌ Deepgram: {error}")
+
+        def on_close(self, close, **kwargs):
+            STATUS_Q.put("🔌 Connexion Deepgram fermée.")
+
+        dg_connection.on(LiveTranscriptionEvents.Transcript,    on_message)
+        dg_connection.on(LiveTranscriptionEvents.Metadata,      on_metadata)
+        dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
+        dg_connection.on(LiveTranscriptionEvents.Error,         on_error)
+        dg_connection.on(LiveTranscriptionEvents.Close,         on_close)
+
+        # Added status for connection attempt
+        STATUS_Q.put("⚡ Connexion à Deepgram...")
+
+        options = LiveOptions(
+            model=model,
+            language=lang_code[:2],
+            smart_format=True,
+            interim_results=True,
+            encoding="linear16",
+            channels=1,
+            sample_rate=16000,
+        )
+
+        if not dg_connection.start(options):
+            STATUS_Q.put("❌ Connexion Deepgram échouée.")
+            return
+
+        STATUS_Q.put("⚡ Streaming Deepgram actif")
+
+        # Stream audio from queue to Deepgram
+        while not stop_event.is_set():
+            try:
+                data = audio_q.get(timeout=0.1)
+                dg_connection.send(data)
+                packets_sent += 1
+                if packets_sent % 20 == 0:
+                    STATUS_Q.put(f"⚡ Envoi audio : {packets_sent} paquets")
+            except queue.Empty:
+                continue
+            except Exception as e:
+                STATUS_Q.put(f"❌ Erreur envoi: {e}")
+                break
+
+        dg_connection.finish()
+
+    except Exception as e:
+        STATUS_Q.put(f"❌ Deepgram critique: {e}")
+
+# No longer need run_dg_async_bridge as worker is sync-style for robust threading
+
+
+# ── Audio producer (BlackHole → bytes 16kHz mono) ─────────────────────────────
+TARGET_RATE = 16000
+
+def _get_peak(raw_bytes):
+    import array as _arr
+    if not raw_bytes: return 0
+    samps = _arr.array('h', raw_bytes)
+    if not samps: return 0
+    return max(abs(s) for s in samps) / 32768.0
+
+def producer_worker(bh_index, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
+    CONFIGS = [(2, 48000, 2400), (1, 48000, 2400), (2, 44100, 2205), (1, 16000, 800)]
+    stream = None
+    p      = None
+    CHANNELS = RATE = CHUNK = None
+
+    try:
+        with PA_LOCK:
+            p = pyaudio.PyAudio()
+            for ch, rate, chunk in CONFIGS:
+                try:
+                    stream = p.open(
+                        format=pyaudio.paInt16, channels=ch, rate=rate,
+                        input=True, input_device_index=bh_index,
+                        frames_per_buffer=chunk
+                    )
+                    CHANNELS, RATE, CHUNK = ch, rate, chunk
+                    STATUS_Q.put(f"🎤 Audio: {ch}ch @ {rate}Hz (Lancement...)")
+                    break
+                except Exception:
+                    continue
+
+        if not stream:
+            raise RuntimeError("Impossible d'ouvrir l'entrée audio — vérifie tes réglages.")
+
+        STATUS_Q.put(f"🎤 Audio: {CHANNELS}ch @ {RATE}Hz actif")
+        ratecv_state = None
+        while not stop_event.is_set():
+            try:
+                raw = stream.read(CHUNK, exception_on_overflow=False)
+                if CHANNELS == 2:
+                    raw = _to_mono(raw)
+                if RATE != TARGET_RATE:
+                    raw, ratecv_state = _ratecv(raw, RATE, TARGET_RATE, ratecv_state)
+
+                peak = _get_peak(raw)
+                UI_Q.put(("level", peak))
+                AUDIO_Q.put(raw)
+                
+                # Critical Debug: Warn if the audio is completely silent
+                if peak < 0.0001:
+                    if int(time.time()) % 10 == 0:
+                        STATUS_Q.put("⚠️ Audio très faible ou silencieux détecté")
+            except Exception:
+                continue
+
+    except Exception as e:
+        STATUS_Q.put(f"❌ Producteur audio: {e}")
+    finally:
+        with PA_LOCK:
+            if stream:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
+            if p:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+        STATUS_Q.put("🛑 Flux audio fermé.")
+
+
+# ── Consumer (transcripts → UI queue) ─────────────────────────────────────────
+def consumer_worker(source_lang, target_lang, history_list, status_dict,
+                    active_glossary, active_glossary_trans,
+                    STATUS_Q, TRANSCRIPT_Q, TRANS_Q, UI_Q, stop_event):
+
+    last_speech_t = time.time()
+    local_orig = ""
+    current_sid = time.time()
+
+    def _commit_sentence():
+        nonlocal local_orig, current_sid
+        if not local_orig.strip():
+            return
+        UI_Q.put(("commit", current_sid))
+        local_orig = ""
+        current_sid = time.time()
+
+    while not stop_event.is_set():
+        try:
+            text, is_final = TRANSCRIPT_Q.get(timeout=0.1)
+            if is_final:
+                clean_text = text.strip()
+                sep = " " if local_orig else ""
+
+                local_orig += sep + clean_text
+                last_speech_t = time.time()
+                UI_Q.put(("final", (local_orig, current_sid)))
+
+                # Envoyer pour traduction
+                try:
+                    TRANS_Q.get_nowait()
+                except Exception:
+                    pass
+                TRANS_Q.put((local_orig, source_lang, target_lang, current_sid))
+
+                if _is_sentence_end(clean_text) or len(local_orig.split()) >= 50:
+                    _commit_sentence()
+            else:
+                UI_Q.put(("interim", text.strip()))
+
+        except queue.Empty:
+            if local_orig and time.time() - last_speech_t > 5.0:
+                _commit_sentence()
+            continue
+
+# ── Translation worker ─────────────────────────────────────────────────────────
+def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
+    while not stop_event.is_set():
+        try:
+            payload = TRANS_Q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        text, src, dest, sid = payload
+        try:
+            translated = GoogleTranslator(source=src[:2], target=dest).translate(text)
+            if translated:
+                UI_Q.put(("translation", (translated, sid)))
+        except Exception as e:
+            UI_Q.put(("translation", (f"[Erreur traduction: {e}]", sid)))
+
+# ── Start / Stop / Clear ───────────────────────────────────────────────────────
+def start_translating(input_index, dg_model, src_lang, tgt_lang, g_list, g_trans_list):
+    dg_key = st.session_state.get("_dg_key", "")
+    if not dg_key:
+        STATUS_QUEUE.put("❌ Entre ta clé Deepgram dans la barre latérale.")
+        return
+
+    # Signal stop to any existing threads properly
+    if "STOP_EVENT" in st.session_state:
+        st.session_state.STOP_EVENT.set()
+    st.session_state.STOP_EVENT = threading.Event()
+    st.session_state.AUDIO_QUEUE       = queue.Queue()
+    st.session_state.TRANSCRIPT_QUEUE  = queue.Queue()
+    st.session_state.TRANSLATION_QUEUE = queue.Queue(maxsize=1)
+    st.session_state.UI_UPDATE_QUEUE   = queue.Queue()
+
+    stop_ev = st.session_state.STOP_EVENT
+    audio_q = st.session_state.AUDIO_QUEUE
+    dg_q    = st.session_state.TRANSCRIPT_QUEUE
+    trans_q = st.session_state.TRANSLATION_QUEUE
+    ui_q    = st.session_state.UI_UPDATE_QUEUE
+
+    st.session_state.status_dict["running"] = True
+    st.session_state.status_dict["msg"]     = "⚡ Démarrage..."
+
+    threading.Thread(
+        target=producer_worker,
+        args=(input_index, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
+        daemon=True
+    ).start()
+
+    threading.Thread(
+        target=deepgram_stream_worker,
+        args=(dg_key, dg_model, src_lang, audio_q, dg_q, STATUS_QUEUE, stop_ev),
+        daemon=True
+    ).start()
+
+
+    threading.Thread(
+        target=consumer_worker,
+        args=(src_lang, tgt_lang,
+              st.session_state.history, st.session_state.status_dict,
+              g_list, g_trans_list,
+              STATUS_QUEUE, dg_q, trans_q, ui_q, stop_ev),
+        daemon=True
+    ).start()
+
+    threading.Thread(
+        target=translation_worker,
+        args=(STATUS_QUEUE, trans_q, ui_q, stop_ev),
+        daemon=True
+    ).start()
+
+def summary_worker(api_key, history, lang, result_queue):
+    """Background worker to generate summary using Groq without blocking the UI."""
+    if not api_key or not history:
+        result_queue.put("❌ Clé Groq manquante ou aucune transcription.")
+        return
+
+    # Construire le texte complet
+    full_text = "\n".join([
+        f"[Original] {item.get('original', '')}\n[Traduction] {item.get('translation', '')}"
+        for item in reversed(history)
+    ])
+
+    try:
+        client = GroqOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1"
+        )
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"""Tu es un assistant expert en synthèse de conversations professionnelles.
+Tu reçois une transcription d'une session d'interprétation avec les phrases originales et leurs traductions.
+Génère un résumé structuré et professionnel en {lang} avec exactement ce format :
+
+## 📋 Résumé général
+(2-3 phrases résumant l'ensemble de la conversation)
+
+## 🔑 Points clés
+- Point 1
+- Point 2
+- Point 3
+- Point 4
+- Point 5 (maximum)
+
+## 💡 Éléments importants à retenir
+(Les informations critiques, décisions prises, actions à suivre)
+
+## 📊 Statistiques de session
+- Nombre de phrases : {len(history)}
+- Langue source → cible
+
+Sois concis, précis et professionnel."""
+                },
+                {
+                    "role": "user",
+                    "content": f"Voici la transcription de la session :\n\n{full_text}"
+                }
+            ],
+            temperature=0.3,
+            max_tokens=1024
+        )
+        summary_text = response.choices[0].message.content
+        result_queue.put(summary_text)
+
+    except Exception as e:
+        result_queue.put(f"❌ Erreur lors de la génération du résumé : {e}")
+
+def generate_summary_groq():
+    """Déclenche la génération de résumé en arrière-plan (asynchrone)."""
+    api_key = st.session_state.get("_groq_key", "")
+    history = st.session_state.history
+    lang = SUMMARY_LANG
+    
+    if not api_key or not history:
+        st.session_state.summary_loading = False
+        st.session_state.summary = "❌ Clé Groq manquante ou aucune transcription."
+        return
+
+    # Si déjà en cours, ne pas relancer
+    if st.session_state.get("summary_in_progress"):
+        return
+
+    # Lancer le thread de génération
+    st.session_state.summary_loading = True
+    st.session_state.summary = ""
+    st.session_state.summary_in_progress = True
+    st.session_state.summary_start_time = time.time()
+    
+    threading.Thread(
+        target=summary_worker,
+        args=(api_key, list(history), lang, st.session_state.SUMMARY_QUEUE),
+        daemon=True
+    ).start()
+
+def stop_translating():
+    st.session_state.STOP_EVENT.set()
+    st.session_state.status_dict["running"] = False
+    st.session_state.status_dict["msg"]     = "🛑 Arrêté."
+    STATUS_QUEUE.put("🛑 Arrêté.")
+    # Marquer que le résumé doit être généré au prochain cycle Streamlit
+    if st.session_state.get("_groq_key") and st.session_state.history:
+        st.session_state.summary = ""
+        st.session_state.summary_loading = True
+        st.session_state.summary_in_progress = False
+        generate_summary_groq()
+
+def clear_conversation():
+    st.session_state.history                         = []
+    st.session_state.current_sentence["original"]    = ""
+    st.session_state.current_sentence["translation"] = ""
+    st.session_state.interim_text                    = ""
+    st.session_state.summary                         = ""
+    st.session_state.summary_loading                 = False
+    st.session_state.summary_in_progress             = False
+    st.session_state.current_page                    = "main"
+    STATUS_QUEUE.put("🗑️ Conversation effacée.")
+
+# ── Drain queues → session state ───────────────────────────────────────────────
+while not STATUS_QUEUE.empty():
+    try:
+        msg = STATUS_QUEUE.get_nowait()
+        if isinstance(msg, str):
+            st.session_state.status_dict["msg"] = msg
+    except Exception:
+        break
+
+while not UI_UPDATE_QUEUE.empty():
+    try:
+        topic, val = UI_UPDATE_QUEUE.get_nowait()
+        if topic == "interim":
+            st.session_state.interim_text = val
+        elif topic == "final":
+            st.session_state.interim_text = ""
+            text, sid = val
+            st.session_state.current_sentence["original"] = text
+            st.session_state.current_sentence["id"]       = sid
+        elif topic == "translation":
+            translated, sid = val
+            # Update current if matches
+            if sid == st.session_state.current_sentence.get("id"):
+                st.session_state.current_sentence["translation"] = translated
+            # Retroactively update history
+            for item in st.session_state.history:
+                if item.get("id") == sid:
+                    item["translation"] = translated
+                    break
+        elif topic == "level":
+            st.session_state.audio_level = val
+        elif topic == "commit":
+            sid = val
+            orig = st.session_state.current_sentence["original"]
+            trad = st.session_state.current_sentence["translation"]
+            if orig.strip():
+                st.session_state.history.insert(0, {"original": orig, "translation": trad, "id": sid})
+            st.session_state.current_sentence["original"]    = ""
+            st.session_state.current_sentence["translation"] = ""
+            st.session_state.current_sentence["id"]          = 0.0
+    except Exception:
+        break
+
+while not st.session_state.SUMMARY_QUEUE.empty():
+    try:
+        res = st.session_state.SUMMARY_QUEUE.get_nowait()
+        st.session_state.summary = res
+        st.session_state.summary_loading = False
+        st.session_state.summary_in_progress = False
+    except Exception:
+        break
+
+# Lancer la génération si en attente
+if st.session_state.summary_loading and not st.session_state.summary:
+    generate_summary_groq()
+
+# ══════════════════════════════════════════════════════════════
+# PAGE PRINCIPALE
+# ══════════════════════════════════════════════════════════════
+if st.session_state.current_page == "main":
+
+    # ── Control buttons ───────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+    with col1:
+        if not st.session_state.status_dict["running"]:
+            st.button("🟢 Démarrer", on_click=start_translating,
+                      args=(SELECTED_DEVICE_INDEX, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
+                      use_container_width=True, disabled=not DG_API_KEY)
+        else:
+            st.button("🔴 Arrêter", on_click=stop_translating, use_container_width=True)
+    with col2:
+        st.button("🗑️ Effacer", on_click=clear_conversation, use_container_width=True)
+    with col3:
+        summarize_disabled = not st.session_state.history or not GROQ_API_KEY
+        st.button(
+            "📋 Résumé",
+            on_click=go_to_summary,
+            use_container_width=True,
+            disabled=summarize_disabled,
+            help="Disponible après une session de transcription avec une clé Groq"
+        )
+    with col4:
+        if st.session_state.status_dict["running"]:
+            st.markdown("<p style='color:#00ff7f;font-size:0.85rem;padding-top:8px'>● LIVE</p>", unsafe_allow_html=True)
+        else:
+            st.markdown("<p style='color:#4a5570;font-size:0.85rem;padding-top:8px'>● Off</p>", unsafe_allow_html=True)
+
+    if not DG_API_KEY:
+        st.warning("👈 Entre ta clé Deepgram dans la barre latérale pour commencer.")
+
+    # ── Status bar ────────────────────────────────────────────
+    msg = st.session_state.status_dict["msg"]
+    if "❌" in msg:
+        st.error(msg)
+    elif "✅" in msg or "⚡" in msg or "🎤" in msg:
+        st.success(msg)
+    else:
+        st.info(msg)
+
+    # ── Notification résumé prêt ──────────────────────────────
+    if st.session_state.summary and not st.session_state.status_dict["running"]:
+        st.success("✅ Résumé IA prêt ! Clique sur **📋 Voir le résumé** dans la barre latérale.")
+
+    # ── Live transcription box ────────────────────────────────
+    _orig_raw  = st.session_state.current_sentence["original"]
+    _interim   = st.session_state.interim_text
+    _trans_raw = st.session_state.current_sentence["translation"]
+
+    display_text = _html.escape(_orig_raw) if _orig_raw else ""
+    if _interim:
+        ghost = _html.escape(_interim)
+        display_text += (" " if _orig_raw else "") + f'<span class="ghost-text">{ghost}…</span>'
+
+    orig  = display_text if display_text else "<span style='opacity:0.3;font-weight:300'>En attente de l'audio…</span>"
+    trans = _html.escape(_trans_raw) if _trans_raw else "<span style='opacity:0.3'>La traduction apparaîtra ici…</span>"
+
+    st.markdown(f"""
+    <div class="live-box">
+        <div class="live-title"><span class="live-dot"></span>TRANSCRIPTION EN DIRECT</div>
+        <div class="live-text">{orig}</div>
+        <div class="translation-text">{trans}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── History ───────────────────────────────────────────────
+    st.subheader("Phrases précédentes")
+    if not st.session_state.history:
+        st.caption("Les phrases complètes apparaissent ici après chaque pause ou fin de phrase.")
+    else:
+        for item in st.session_state.history:
+            s_orig  = _html.escape(item.get("original", ""))
+            s_trans = _html.escape(item.get("translation", ""))
+            st.markdown(f"""
+            <div class="history-card">
+                <div class="history-original">{s_orig}</div>
+                <div class="history-translation">{s_trans}</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Refresh loop ──────────────────────────────────────────
+    if st.session_state.status_dict["running"]:
+        time.sleep(0.08)
+        try:
+            st.rerun()
+        except Exception:
+            pass
+
+    # Rerun si résumé en cours de génération
+    if st.session_state.summary_loading:
+        time.sleep(0.5)
+        try:
+            st.rerun()
+        except Exception:
+            pass
+
+# ══════════════════════════════════════════════════════════════
+# PAGE RÉSUMÉ
+# ══════════════════════════════════════════════════════════════
+elif st.session_state.current_page == "summary":
+
+    # ── Header page résumé ────────────────────────────────────
+    col_back, col_title = st.columns([1, 5])
+    with col_back:
+        if st.button("← Retour", use_container_width=True):
+            st.session_state.current_page = "main"
+            st.rerun()
+    with col_title:
+        st.markdown("""
+        <div style='padding-top:6px'>
+            <span style='font-size:1.4rem;font-weight:700;color:var(--live-text)'>📋 Résumé de session</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<hr style='border-color:var(--sb-border);margin:0.8rem 0'>", unsafe_allow_html=True)
+
+    # ── Boutons actions ───────────────────────────────────────
+    col_r1, col_r2, col_r3 = st.columns([2, 2, 4])
+    with col_r1:
+        if st.button("🔄 Régénérer", use_container_width=True):
+            st.session_state.summary = ""
+            st.session_state.summary_loading = True
+            st.session_state.summary_in_progress = False
+            # generate_summary_groq() <- Géré globalement par le cycle principal
+            # On laisse le cycle normal s'en charger
+    with col_r2:
+        if st.session_state.summary and "❌" not in st.session_state.summary:
+            st.download_button(
+                "💾 Télécharger",
+                data=st.session_state.summary,
+                file_name="resume_session.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Affichage du résumé ───────────────────────────────────
+    if st.session_state.summary_loading and not st.session_state.summary:
+        st.markdown("""
+        <div style='background:rgba(0,200,255,0.05);border:1px solid rgba(0,200,255,0.15);
+                    border-radius:16px;padding:40px;text-align:center'>
+            <div style='font-size:2rem;margin-bottom:16px'>⏳</div>
+            <div style='color:#00c8ff;font-size:1rem;font-weight:600'>Génération du résumé en cours...</div>
+            <div style='color:#4a5570;font-size:0.85rem;margin-top:8px'>Groq analyse ta session</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # La génération est déjà déclenchée par le cycle principal
+        timeout_limit = 45.0
+        elapsed = time.time() - st.session_state.get("summary_start_time", 0)
+        
+        if elapsed > timeout_limit:
+            st.session_state.summary_loading = False
+            st.session_state.summary_in_progress = False
+            st.session_state.summary = "❌ Délai dépassé (Timeout). Groq ne répond pas, réessaie plus tard."
+            st.rerun()
+
+        time.sleep(0.5)
+        st.rerun()
+
+    elif st.session_state.summary:
+        # Afficher le résumé formaté
+        summary_escaped = st.session_state.summary
+        st.markdown(f"""
+        <div style='background:linear-gradient(145deg,rgba(10,16,28,0.98),rgba(16,22,38,0.9));
+                    border:1px solid rgba(0,200,255,0.2);border-radius:18px;
+                    padding:32px 36px;line-height:1.9;color:#c8d0e0;font-size:0.95rem;
+                    box-shadow:0 8px 32px rgba(0,0,0,0.5);position:relative;overflow:hidden'>
+            <div style='position:absolute;top:0;left:0;right:0;height:2px;
+                        background:linear-gradient(90deg,transparent,#00c8ff,#0066ff,transparent);
+                        opacity:0.5'></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Utiliser st.markdown natif pour le rendu Markdown du résumé
+        st.markdown(summary_escaped)
+
+        # Stats de session
+        st.markdown("<hr style='border-color:#1a2030;margin:1.5rem 0'>", unsafe_allow_html=True)
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            st.metric("Phrases transcrites", len(st.session_state.history))
+        with col_s2:
+            total_words = sum(len(item.get("original", "").split()) for item in st.session_state.history)
+            st.metric("Mots transcrits", total_words)
+        with col_s3:
+            st.metric("Modèle IA", "Groq Llama 3.3")
+
+    else:
+        st.markdown("""
+        <div style='background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);
+                    border-radius:16px;padding:40px;text-align:center;color:#4a5570'>
+            <div style='font-size:2rem;margin-bottom:12px'>🤖</div>
+            <div style='font-size:1rem'>Aucun résumé disponible</div>
+            <div style='font-size:0.85rem;margin-top:8px'>Lance une session de transcription puis reviens ici</div>
+        </div>
+        """, unsafe_allow_html=True)
