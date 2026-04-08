@@ -157,12 +157,12 @@ if st.session_state.theme == "dark":
         --live-glow: 0 0 10px #ff2255, 0 0 20px rgba(255,34,85,0.4);
         --live-text: #f0f4ff;
         --ghost-text: 0.35;
-        --trans-text: #5bb8ff;
+        --trans-text: #00e5ff;
         --hist-bg: rgba(255,255,255,0.025);
         --hist-hover: rgba(255,255,255,0.04);
         --hist-border: rgba(0, 200, 255, 0.35);
         --hist-orig: #d0d8ee;
-        --hist-trans: #4a9fd4;
+        --hist-trans: #00b8d4;
         --btn-bg: rgba(255,255,255,0.04);
         --btn-border: rgba(255,255,255,0.08);
         --btn-hover: rgba(0, 200, 255, 0.12);
@@ -195,12 +195,12 @@ else:
         --live-glow: 0 0 10px #ef4444, 0 0 20px rgba(239,68,68,0.4);
         --live-text: #0f172a;
         --ghost-text: 0.45;
-        --trans-text: #0369a1;
+        --trans-text: #007fb1;
         --hist-bg: rgba(255,255,255,1);
         --hist-hover: rgba(241,245,249,1);
         --hist-border: rgba(2, 132, 199, 0.35);
         --hist-orig: #1e293b;
-        --hist-trans: #334155;
+        --hist-trans: #006080;
         --btn-bg: #ffffff;
         --btn-border: #94a3b8;
         --btn-hover: rgba(2, 132, 199, 0.08);
@@ -314,15 +314,15 @@ st.markdown(f"""
     }}
 
     .translation-text {{
-        font-size: 1.2rem;
-        font-weight: 400;
+        font-size: 1.5rem;
+        font-weight: 500;
         color: var(--trans-text);
         margin-top: 18px;
         padding-top: 18px;
         border-top: 1px solid var(--sb-border);
         font-style: italic;
         line-height: 1.5;
-        letter-spacing: 0.01em;
+        letter-spacing: 0.02em;
     }}
 
     /* ── History Cards ── */
@@ -347,11 +347,11 @@ st.markdown(f"""
         line-height: 1.5;
     }}
     .history-translation {{
-        font-size: 0.95rem;
+        font-size: 1.25rem;
         color: var(--hist-trans);
         font-style: italic;
         line-height: 1.5;
-        opacity: 0.85;
+        opacity: 0.95;
     }}
 
     /* ── Buttons ── */
