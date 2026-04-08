@@ -32,7 +32,7 @@ except ImportError:
 def _to_mono(raw: bytes) -> bytes:
     """Stereo int16 → mono int16 (pure Python fallback)."""
     if _HAS_AUDIOOP:
-        return audioop.tomono(raw, 2, 1, 1)
+        return audioop.tomono(raw, 2, 0.5, 0.5)
     import array as _arr
     samps = _arr.array('h', raw)
     mono  = _arr.array('h', ((samps[i] + samps[i + 1]) // 2 for i in range(0, len(samps), 2)))
@@ -168,6 +168,10 @@ if st.session_state.theme == "dark":
         --btn-hover: rgba(0, 200, 255, 0.12);
         --btn-hover-border: rgba(0, 200, 255, 0.4);
         --btn-shadow: none;
+        --btn-primary-bg: linear-gradient(135deg, #00b359, #00d26a);
+        --btn-primary-border: #00d26a;
+        --btn-primary-hover: linear-gradient(135deg, #00994d, #00b359);
+        --btn-primary-text: #ffffff;
         --status-bg: rgba(255,255,255,0.04);
         --sb-bg: rgba(8,11,16,0.98);
         --sb-border: rgba(255,255,255,0.05);
@@ -177,6 +181,7 @@ if st.session_state.theme == "dark":
         --input-border: rgba(255,255,255,0.1);
         --input-text: #f0f4ff;
         --label-text: #c8d0e0;
+        --toggle-icon: #00d26a;
     """
 else:
     theme_vars = """
@@ -201,6 +206,10 @@ else:
         --btn-hover: rgba(2, 132, 199, 0.08);
         --btn-hover-border: rgba(2, 132, 199, 0.6);
         --btn-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --btn-primary-bg: linear-gradient(135deg, #10b981, #34d399);
+        --btn-primary-border: #10b981;
+        --btn-primary-hover: linear-gradient(135deg, #059669, #10b981);
+        --btn-primary-text: #ffffff;
         --status-bg: rgba(241,245,249,1);
         --sb-bg: rgba(248,250,252,0.98);
         --sb-border: rgba(0,0,0,0.05);
@@ -210,6 +219,7 @@ else:
         --input-border: #cbd5e1;
         --input-text: #0f172a;
         --label-text: #334155;
+        --toggle-icon: #000000;
     """
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -380,6 +390,27 @@ st.markdown(f"""
         outline: none !important;
     }}
 
+    /* ── Primary Button (Résumé) ── */
+    .stButton button[kind="primary"], .stButton button[data-testid="baseButton-primary"] {{
+        background: var(--btn-primary-bg) !important;
+        border: 1px solid var(--btn-primary-border) !important;
+        color: var(--btn-primary-text) !important;
+        box-shadow: 0 0 15px var(--live-border);
+    }}
+    .stButton button[kind="primary"]:hover, .stButton button[data-testid="baseButton-primary"]:hover {{
+        background: var(--btn-primary-hover) !important;
+        box-shadow: 0 0 20px var(--btn-primary-border);
+        color: var(--btn-primary-text) !important;
+        transform: translateY(-2px);
+    }}
+    .stButton button[kind="primary"]:disabled, .stButton button[data-testid="baseButton-primary"]:disabled {{
+        background: var(--btn-primary-bg) !important;
+        border-color: var(--btn-primary-border) !important;
+        color: var(--btn-primary-text) !important;
+        opacity: 0.35;
+        box-shadow: none;
+    }}
+
     /* ── Status ── */
     .stInfo, .stSuccess, .stError, .stWarning {{
         background: var(--status-bg) !important;
@@ -394,6 +425,15 @@ st.markdown(f"""
     [data-testid="stSidebar"] {{
         background: var(--sb-bg) !important;
         border-right: 1px solid var(--sb-border);
+    }}
+
+    /* ── Native Sidebar Arrow Colors ── */
+    [data-testid="collapsedControl"] svg,
+    [data-testid="stSidebarCollapseControl"] svg,
+    [data-testid="stSidebarCollapseButton"] svg {{
+        fill: var(--toggle-icon) !important;
+        color: var(--toggle-icon) !important;
+        opacity: 1 !important;
     }}
 
     /* ── Header ── */
@@ -479,9 +519,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Audio detection ───────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def get_audio_devices_cached():
-    """Returns a dictionary of {name: index} for available input devices (cached)."""
+def get_audio_devices():
+    """Returns a dictionary of {name: index} for available input devices."""
+    if "AUDIO_DEVICES_CACHE" in st.session_state:
+        return st.session_state["AUDIO_DEVICES_CACHE"]
+
     with PA_LOCK:
         p = pyaudio.PyAudio()
         devices = {}
@@ -490,12 +532,12 @@ def get_audio_devices_cached():
                 info = p.get_device_info_by_index(i)
                 if info["maxInputChannels"] > 0:
                     devices[info["name"]] = i
+            st.session_state["AUDIO_DEVICES_CACHE"] = devices
             return devices
         finally:
             p.terminate()
 
-def get_audio_devices():
-    return get_audio_devices_cached()
+
 
 def find_blackhole_index():
     """Find the BlackHole audio device index."""
@@ -510,24 +552,36 @@ def find_blackhole_index():
 def _audio_waveform_html(level: float) -> str:
     """Return an HTML/CSS animated waveform bar visualizer for the sidebar."""
     import math
-    level = min(1.0, max(0.0, level))
+    import random
+    # Appliquer un gain dynamique (puissance) pour que les petites voix fassent monter les barres haut
+    boosted_level = min(1.0, (level * 4.5) ** 0.65)
+    
     num_bars = 30
-    max_h = 38   # px
+    max_h = 40   # px
     min_h = 3    # px
     bars = []
+    
     for i in range(num_bars):
         # Bell-curve shape: tall in centre, shorter at edges
         edge_factor = 1.0 - 0.45 * abs((i - num_bars / 2) / (num_bars / 2)) ** 1.4
-        sine_factor = 0.70 + 0.30 * abs(math.sin(i * 0.53 + 1.1))
-        h = max(min_h, int((min_h + (max_h - min_h) * level * edge_factor * sine_factor)))
-        delay  = round((i * 0.048) % 1.1, 3)
-        speed  = round(0.32 + 0.22 * abs(math.sin(i * 0.71)), 3)
+        
+        # Un peu de variation dynamique basée sur le mix entre l'index et le niveau actuel
+        # random.seed(int(boosted_level * 100) + i) -> pas de random pour eviter trop de jitter intempestif
+        # On utilise une combinatoire pseudo-aléatoire fluide
+        sine_factor = 0.60 + 0.40 * abs(math.sin(i * 0.73 + boosted_level * 5.0))
+        
+        # Quand y'a du son, on ajoute la variation, quand y'a du silence on garde min_h.
+        h = max(min_h, int(min_h + (max_h - min_h) * boosted_level * edge_factor * sine_factor))
+        
         bright = int(180 + 75 * edge_factor)
         colour = f"rgb(0,{bright},255)"
+        
         bars.append(
-            f'<span class="wb" style="height:{h}px;--d:{delay}s;--spd:{speed}s;--c:{colour}"></span>'
+            f'<span class="wb" style="height:{h}px;--c:{colour}"></span>'
         )
+        
     bars_html = "".join(bars)
+    
     return f"""
 <style>
 .wv-wrap{{margin:10px 0 4px;padding:0;}}
@@ -541,12 +595,7 @@ def _audio_waveform_html(level: float) -> str:
      background:linear-gradient(180deg,var(--c,#00c8ff) 0%,rgba(0,80,200,0.6) 100%);
      box-shadow:0 0 5px rgba(0,200,255,0.20);
      transform-origin:bottom center;
-     animation:wvb var(--spd,0.45s) ease-in-out infinite alternate;
-     animation-delay:var(--d,0s);}}
-@keyframes wvb{{
-  0%{{transform:scaleY(0.18);opacity:0.45;}}
-  100%{{transform:scaleY(1.0);opacity:0.95;}}
-}}
+     transition: height 0.08s ease;}}
 </style>
 <div class="wv-wrap">
   <div class="wv-lbl">Niveau audio</div>
@@ -557,7 +606,7 @@ def _audio_waveform_html(level: float) -> str:
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.markdown("<br>", unsafe_allow_html=True)
 col_thm = st.sidebar.columns([1])[0]
-theme_icon = "🌞 Mode Clair" if st.session_state.theme == "dark" else "🌙 Mode Sombre"
+theme_icon = "☀️ Mode Clair" if st.session_state.theme == "dark" else "🌙 Mode Sombre"
 col_thm.button(theme_icon, on_click=toggle_theme, use_container_width=True)
 st.sidebar.markdown("---")
 
@@ -603,12 +652,17 @@ _saved_device = _persisted.get("audio_device", default_dev_name)
 _dev_idx = device_names.index(_saved_device) if _saved_device in device_names else 0
 
 selected_device_name = st.sidebar.selectbox("Entrée audio", device_names, index=_dev_idx)
+if st.sidebar.button("🔄 Rafraîchir les périphériques"):
+    if "AUDIO_DEVICES_CACHE" in st.session_state:
+        del st.session_state["AUDIO_DEVICES_CACHE"]
+    st.rerun()
+
 SELECTED_DEVICE_INDEX = devices_dict[selected_device_name]
 
 if selected_device_name != _saved_device:
     save_settings({"audio_device": selected_device_name})
 
-st.sidebar.info(f"Appareil ID: {SELECTED_DEVICE_INDEX}")
+st.sidebar.info(f"Appareil: {selected_device_name}")
 
 if st.session_state.status_dict["running"]:
     st.sidebar.markdown(
@@ -776,7 +830,7 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
         # Sync-style connection for stability
         config = DeepgramClientOptions(options={"keepalive": "true"})
         client = DeepgramClient(api_key, config)
-        dg_connection = client.listen.websocket.v("1") # Modern WebSocket interface
+        dg_connection = client.listen.live.v("1")  # live streaming API
 
         packets_sent = 0
 
@@ -837,8 +891,6 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
                 data = audio_q.get(timeout=0.1)
                 dg_connection.send(data)
                 packets_sent += 1
-                if packets_sent % 50 == 0:
-                    STATUS_Q.put(f"⚡ Envoi : {packets_sent} paquets OK")
             except queue.Empty:
                 continue
             except Exception as e:
@@ -858,11 +910,15 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
 TARGET_RATE = 16000
 
 def _get_peak(raw_bytes):
+    if not raw_bytes: 
+        return 0
     import array as _arr
-    if not raw_bytes: return 0
-    samps = _arr.array('h', raw_bytes)
-    if not samps: return 0
-    return max(abs(s) for s in samps) / 32768.0
+    try:
+        samps = _arr.array('h', raw_bytes)
+        if not samps: return 0
+        return max(abs(s) for s in samps) / 32768.0
+    except Exception:
+        return 0
 
 def producer_worker(bh_index, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
     CONFIGS = [(2, 48000, 2400), (1, 48000, 2400), (2, 44100, 2205), (1, 16000, 800)]
@@ -901,7 +957,10 @@ def producer_worker(bh_index, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
 
                 peak = _get_peak(raw)
                 UI_Q.put(("level", peak))
-                AUDIO_Q.put(raw)
+                try:
+                    AUDIO_Q.put_nowait(raw)
+                except queue.Full:
+                    pass
                 
                 # Critical Debug: Warn if the audio is completely silent
                 if peak < 0.0001:
@@ -960,12 +1019,15 @@ def consumer_worker(source_lang, target_lang, history_list, status_dict,
                 last_speech_t = time.time()
                 UI_Q.put(("final", (local_orig, current_sid)))
 
-                # Envoyer pour traduction
+                # Envoyer pour traduction — vider l'ancienne requête puis envoyer la nouvelle
                 try:
                     TRANS_Q.get_nowait()
                 except Exception:
                     pass
-                TRANS_Q.put((local_orig, source_lang, target_lang, current_sid))
+                try:
+                    TRANS_Q.put((local_orig, source_lang, target_lang, current_sid), timeout=0.1)
+                except Exception:
+                    pass
 
                 if _is_sentence_end(clean_text) or len(local_orig.split()) >= 50:
                     _commit_sentence()
@@ -993,19 +1055,26 @@ def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
             UI_Q.put(("translation", (f"[Erreur traduction: {e}]", sid)))
 
 # ── Start / Stop / Clear ───────────────────────────────────────────────────────
-def start_translating(input_index, dg_model, src_lang, tgt_lang, g_list, g_trans_list):
+def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_list):
     dg_key = st.session_state.get("_dg_key", "")
     if not dg_key:
         STATUS_QUEUE.put("❌ Entre ta clé Deepgram dans la barre latérale.")
         return
 
+    # Look up the current valid index for the selected device name
+    devices = get_audio_devices()
+    if input_name not in devices:
+        STATUS_QUEUE.put(f"❌ Appareil '{input_name}' introuvable ou déconnecté.")
+        return
+    actual_index = devices[input_name]
+
     # Signal stop to any existing threads properly
     if "STOP_EVENT" in st.session_state:
         st.session_state.STOP_EVENT.set()
     st.session_state.STOP_EVENT = threading.Event()
-    st.session_state.AUDIO_QUEUE       = queue.Queue()
+    st.session_state.AUDIO_QUEUE       = queue.Queue(maxsize=60)
     st.session_state.TRANSCRIPT_QUEUE  = queue.Queue()
-    st.session_state.TRANSLATION_QUEUE = queue.Queue(maxsize=1)
+    st.session_state.TRANSLATION_QUEUE = queue.Queue(maxsize=15)
     st.session_state.UI_UPDATE_QUEUE   = queue.Queue()
 
     stop_ev = st.session_state.STOP_EVENT
@@ -1019,7 +1088,7 @@ def start_translating(input_index, dg_model, src_lang, tgt_lang, g_list, g_trans
 
     threading.Thread(
         target=producer_worker,
-        args=(input_index, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
+        args=(actual_index, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
         daemon=True
     ).start()
 
@@ -1067,28 +1136,35 @@ def summary_worker(api_key, history, lang, result_queue):
             messages=[
                 {
                     "role": "system",
-                    "content": f"""Tu es un assistant expert en synthèse de conversations professionnelles.
-Tu reçois une transcription d'une session d'interprétation avec les phrases originales et leurs traductions.
-Génère un résumé structuré et professionnel en {lang} avec exactement ce format :
+                    "content": f"""Tu es un assistant expert en analyse et synthèse de conversations professionnelles.
+Ta tâche est de traiter une transcription (phrases originales et traductions) et de générer un résumé exhaustif, hautement détaillé et ultra-précis en {lang}.
+Tu dois respecter scrupuleusement la vérité de la transcription et n'inventer aucune information. Prends soin de restituer tous les détails importants.
 
-## 📋 Résumé général
-(2-3 phrases résumant l'ensemble de la conversation)
+Génère le résumé avec exactement cette structure structurée et complète :
 
-## 🔑 Points clés
-- Point 1
-- Point 2
-- Point 3
-- Point 4
-- Point 5 (maximum)
+## 📋 Résumé Exécutif Détaillé
+(Fournis un résumé substantiel de 4 à 6 phrases décrivant le contexte complet, les enjeux et la conclusion de la conversation, de manière parfaitement fidèle)
 
-## 💡 Éléments importants à retenir
-(Les informations critiques, décisions prises, actions à suivre)
+## 🔑 Thèmes Principaux et Points Clés
+(Liste de manière exhaustive TOUS les sujets abordés. Ne te limite pas à 5 points. Utilise autant de points que nécessaire pour capturer le contenu entier)
+- **Point majeur 1** : Description détaillée de ce point.
+  - Détail ou fait marquant
+  - Éléments de discussion affiliés
+- **Point majeur 2** : Description détaillée.
+  - Détail ou argument avancé
+- ... (ajoute autant de points que le contenu l'exige)
+
+## 💡 Décisions, Engagements et Actions
+(Capture de façon granulaire tout ce qui a été décidé, les actions urgentes ou les points de désaccord/résolution)
+- Décision / Action 1
+- Décision / Action 2
+- ... (ajoute tout élément applicable, ou indique "Aucune action spécifique formulée" si c'est le cas)
 
 ## 📊 Statistiques de session
-- Nombre de phrases : {len(history)}
-- Langue source → cible
+- Nombre de phrases traitées : {len(history)}
+- Analyse linguistique : Source → Cible
 
-Sois concis, précis et professionnel."""
+Livre un compte-rendu très complet avec beaucoup de bullet points. Valorise la quantité de détails justes plutôt que la simple brièveté."""
                 },
                 {
                     "role": "user",
@@ -1163,9 +1239,9 @@ while not STATUS_QUEUE.empty():
     except Exception:
         break
 
-while not UI_UPDATE_QUEUE.empty():
+while not st.session_state.UI_UPDATE_QUEUE.empty():
     try:
-        topic, val = UI_UPDATE_QUEUE.get_nowait()
+        topic, val = st.session_state.UI_UPDATE_QUEUE.get_nowait()
         if topic == "interim":
             st.session_state.interim_text = val
         elif topic == "final":
@@ -1221,7 +1297,7 @@ if st.session_state.current_page == "main":
     with col1:
         if not st.session_state.status_dict["running"]:
             st.button("🟢 Démarrer", on_click=start_translating,
-                      args=(SELECTED_DEVICE_INDEX, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
+                      args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=not DG_API_KEY)
         else:
             st.button("🔴 Arrêter", on_click=stop_translating, use_container_width=True)
@@ -1231,6 +1307,7 @@ if st.session_state.current_page == "main":
         summarize_disabled = not st.session_state.history or not GROQ_API_KEY
         st.button(
             "📋 Résumé",
+            type="primary",
             on_click=go_to_summary,
             use_container_width=True,
             disabled=summarize_disabled,
@@ -1295,7 +1372,7 @@ if st.session_state.current_page == "main":
 
     # ── Refresh loop ──────────────────────────────────────────
     if st.session_state.status_dict["running"]:
-        time.sleep(0.08)
+        time.sleep(0.12)
         try:
             st.rerun()
         except Exception:

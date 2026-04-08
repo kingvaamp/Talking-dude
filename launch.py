@@ -6,11 +6,15 @@ import signal
 import sys
 
 # Configuration
-STREAMLIT_FILE = "Talking_Dude_v4.py"
+STREAMLIT_FILE = "Talking_Dude_v4_fixed.py"
 PORT = 8501
 
 def start_streamlit():
     """Lancer le serveur Streamlit en arrière-plan."""
+    print(f"🚀 Nettoyage des processus fantômes...")
+    os.system(f"pkill -f 'streamlit run {STREAMLIT_FILE}'")
+    time.sleep(0.5)
+
     print(f"🚀 Lancement de Streamlit ({STREAMLIT_FILE})...")
     # Utiliser sys.executable pour plus de robustesse
     python_exe = sys.executable
@@ -18,7 +22,7 @@ def start_streamlit():
         python_exe, "-m", "streamlit", "run", STREAMLIT_FILE,
         "--server.port", str(PORT),
         "--server.headless", "true",
-        "--server.runOnSave", "false",
+        "--server.runOnSave", "true",
         "--browser.gatherUsageStats", "false"
     ])
 
