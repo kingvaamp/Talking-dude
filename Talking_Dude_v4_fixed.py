@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import html as _html
 import json
 import os
@@ -163,6 +164,9 @@ if st.session_state.theme == "dark":
         --hist-border: rgba(0, 200, 255, 0.35);
         --hist-orig: #d0d8ee;
         --hist-trans: #00b8d4;
+        --hist-hl-bg: rgba(0, 150, 255, 0.14);
+        --hist-hl-border: #00c8ff;
+        --hist-hl-glow: 0 0 0 2px rgba(0,200,255,0.18), 0 4px 20px rgba(0,150,255,0.18);
         --btn-bg: rgba(255,255,255,0.04);
         --btn-border: rgba(255,255,255,0.08);
         --btn-hover: rgba(0, 200, 255, 0.12);
@@ -201,6 +205,9 @@ else:
         --hist-border: rgba(2, 132, 199, 0.35);
         --hist-orig: #1e293b;
         --hist-trans: #006080;
+        --hist-hl-bg: rgba(2, 132, 199, 0.10);
+        --hist-hl-border: #0284c7;
+        --hist-hl-glow: 0 0 0 2px rgba(2,132,199,0.15), 0 4px 18px rgba(2,132,199,0.12);
         --btn-bg: #ffffff;
         --btn-border: #94a3b8;
         --btn-hover: rgba(2, 132, 199, 0.08);
@@ -332,19 +339,42 @@ st.markdown(f"""
         padding: 16px 20px;
         margin-bottom: 14px;
         border-left: 3px solid var(--hist-border);
-        transition: all 0.2s ease;
+        transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
         position: relative;
+        cursor: pointer;
+        user-select: none;
     }}
     .history-card:hover {{
         background: var(--hist-hover);
         border-left-color: var(--live-title);
         transform: translateX(3px);
     }}
+    .history-card.highlighted {{
+        background: var(--hist-hl-bg) !important;
+        border-left: 3px solid var(--hist-hl-border) !important;
+        box-shadow: var(--hist-hl-glow);
+        transform: translateX(3px);
+    }}
+    .history-card.highlighted .history-original {{
+        color: var(--hist-hl-border);
+        font-weight: 600;
+    }}
+    .history-card.highlighted::after {{
+        content: "✦";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: var(--hist-hl-border);
+        font-size: 0.75rem;
+        opacity: 0.7;
+    }}
     .history-original {{
         font-size: 1rem;
         color: var(--hist-orig);
         margin-bottom: 6px;
         line-height: 1.5;
+        transition: color 0.22s ease;
     }}
     .history-translation {{
         font-size: 1.25rem;
@@ -823,87 +853,103 @@ def _is_sentence_end(text):
     return bool(t) and t[-1] in ".?!"
 
 # ── Deepgram streaming worker ──────────────────────────────────────────────────
-# ── Deepgram streaming worker ──────────────────────────────────────────────────
 def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STATUS_Q, stop_event):
-    """Sync-style connection for stability in multi-threaded environment."""
-    try:
-        # Sync-style connection for stability
-        config = DeepgramClientOptions(options={"keepalive": "true"})
-        client = DeepgramClient(api_key, config)
-        dg_connection = client.listen.live.v("1")  # live streaming API
+    """Robust Deepgram streaming worker with auto-reconnect and KeepAlive for long sessions."""
 
-        packets_sent = 0
+    live_options = LiveOptions(
+        model=model,
+        language=lang_code[:2],
+        smart_format=True,
+        interim_results=True,
+        encoding="linear16",
+        channels=1,
+        sample_rate=16000,
+    )
 
-        def on_message(self, result, **kwargs):
-            nonlocal packets_sent
-            try:
-                transcript = result.channel.alternatives[0].transcript
-                if transcript:
-                    STATUS_Q.put(f"📝 Reçu: '{transcript[:20]}...'")
-                    transcript_q.put((transcript, result.is_final))
-                else:
-                    # Occasional heartbeat for empty transcripts to confirm connection is alive
-                    if packets_sent % 100 == 0:
-                        STATUS_Q.put("⌛ En attente de parole...")
-            except Exception as e:
-                print(f"DEBUG: Error parsing DG message: {e}")
+    while not stop_event.is_set():
+        connection_closed = threading.Event()
 
-        def on_metadata(self, metadata, **kwargs):
-            STATUS_Q.put("✅ Deepgram connecté & prêt")
+        try:
+            config = DeepgramClientOptions(options={"keepalive": "true"})
+            client = DeepgramClient(api_key, config)
+            dg_connection = client.listen.live.v("1")
 
-        def on_speech_started(self, speech_started, **kwargs):
-            STATUS_Q.put("🎙️ Voix détectée...")
+            def on_message(self, result, **kwargs):
+                try:
+                    transcript = result.channel.alternatives[0].transcript
+                    if transcript:
+                        transcript_q.put((transcript, result.is_final))
+                except Exception as e:
+                    print(f"DEBUG on_message: {e}")
 
-        def on_error(self, error, **kwargs):
-            STATUS_Q.put(f"❌ Deepgram: {error}")
+            def on_metadata(self, metadata, **kwargs):
+                STATUS_Q.put("✅ Deepgram connecté & prêt")
 
-        def on_close(self, close, **kwargs):
-            STATUS_Q.put("🔌 Connexion Deepgram fermée.")
+            def on_speech_started(self, speech_started, **kwargs):
+                STATUS_Q.put("🎙️ Voix détectée...")
 
-        dg_connection.on(LiveTranscriptionEvents.Transcript,    on_message)
-        dg_connection.on(LiveTranscriptionEvents.Metadata,      on_metadata)
-        dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
-        dg_connection.on(LiveTranscriptionEvents.Error,         on_error)
-        dg_connection.on(LiveTranscriptionEvents.Close,         on_close)
+            def on_error(self, error, **kwargs):
+                STATUS_Q.put(f"❌ Deepgram erreur: {error}")
+                connection_closed.set()
 
-        # Added status for connection attempt
-        STATUS_Q.put("⚡ Connexion à Deepgram...")
+            def on_close(self, close, **kwargs):
+                STATUS_Q.put("🔌 Connexion Deepgram fermée — reconnexion...")
+                connection_closed.set()
 
-        options = LiveOptions(
-            model=model,
-            language=lang_code[:2],
-            smart_format=True,
-            interim_results=True,
-            encoding="linear16",
-            channels=1,
-            sample_rate=16000,
-        )
+            dg_connection.on(LiveTranscriptionEvents.Transcript,    on_message)
+            dg_connection.on(LiveTranscriptionEvents.Metadata,      on_metadata)
+            dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
+            dg_connection.on(LiveTranscriptionEvents.Error,         on_error)
+            dg_connection.on(LiveTranscriptionEvents.Close,         on_close)
 
-        if not dg_connection.start(options):
-            STATUS_Q.put("❌ Connexion Deepgram échouée.")
-            return
+            STATUS_Q.put("⚡ Connexion à Deepgram...")
 
-        STATUS_Q.put("⚡ Streaming Deepgram actif")
-
-        # Stream audio from queue to Deepgram
-        while not stop_event.is_set():
-            try:
-                data = audio_q.get(timeout=0.1)
-                dg_connection.send(data)
-                packets_sent += 1
-            except queue.Empty:
+            if not dg_connection.start(live_options):
+                STATUS_Q.put("❌ Connexion Deepgram échouée. Nouvelle tentative dans 3s...")
+                time.sleep(3)
                 continue
-            except Exception as e:
-                STATUS_Q.put(f"❌ Erreur envoi Deepgram: {e}")
+
+            STATUS_Q.put("⚡ Streaming Deepgram actif")
+            last_keepalive_t = time.time()
+
+            while not stop_event.is_set() and not connection_closed.is_set():
+                try:
+                    data = audio_q.get(timeout=0.1)
+                    dg_connection.send(data)
+                    last_keepalive_t = time.time()
+                except queue.Empty:
+                    # Send KeepAlive every 8s of silence to prevent server-side timeout
+                    now = time.time()
+                    if now - last_keepalive_t >= 8.0:
+                        try:
+                            dg_connection.send(json.dumps({"type": "KeepAlive"}))
+                            last_keepalive_t = now
+                        except Exception:
+                            pass
+                    continue
+                except Exception as e:
+                    STATUS_Q.put(f"❌ Erreur envoi Deepgram: {e}")
+                    connection_closed.set()
+                    break
+
+            try:
+                dg_connection.finish()
+            except Exception:
+                pass
+
+            if stop_event.is_set():
+                STATUS_Q.put("🛑 Arrêt du flux Deepgram")
                 break
 
-        STATUS_Q.put("🛑 Arrêt du flux Deepgram")
-        dg_connection.finish()
+            # Connection dropped — wait briefly then reconnect
+            STATUS_Q.put("🔄 Reconnexion Deepgram dans 2s...")
+            time.sleep(2)
 
-    except Exception as e:
-        STATUS_Q.put(f"❌ Échec critique Deepgram: {e}")
+        except Exception as e:
+            STATUS_Q.put(f"❌ Échec critique Deepgram: {e} — Reconnexion dans 3s...")
+            time.sleep(3)
 
-# No longer need run_dg_async_bridge as worker is sync-style for robust threading
+
 
 
 # ── Audio producer (BlackHole → bytes 16kHz mono) ─────────────────────────────
@@ -1361,14 +1407,116 @@ if st.session_state.current_page == "main":
     if not st.session_state.history:
         st.caption("Les phrases complètes apparaissent ici après chaque pause ou fin de phrase.")
     else:
-        for item in st.session_state.history:
+        _is_dark = st.session_state.theme == "dark"
+        # Theme-aware colors (inlined — CSS vars don't cross iframe boundary)
+        _c = {
+            "bg":          "#0d1117"         if _is_dark else "#ffffff",
+            "card_bg":     "rgba(255,255,255,0.025)" if _is_dark else "#ffffff",
+            "card_hover":  "rgba(255,255,255,0.05)"  if _is_dark else "#f1f5f9",
+            "card_border": "rgba(0,200,255,0.35)"    if _is_dark else "rgba(2,132,199,0.35)",
+            "orig":        "#d0d8ee"         if _is_dark else "#1e293b",
+            "trans":       "#00b8d4"         if _is_dark else "#006080",
+            "hl_bg":       "rgba(0,210,100,0.13)"    if _is_dark else "rgba(16,185,129,0.22)",
+            "hl_border":   "#00d26a"         if _is_dark else "#047857",
+            "hl_glow":     "0 0 0 2px rgba(0,210,100,0.22),0 4px 22px rgba(0,210,100,0.18)" if _is_dark
+                           else "0 0 0 3px rgba(4,120,87,0.40),0 4px 22px rgba(16,185,129,0.30)",
+            "hl_orig":     "#00d26a"         if _is_dark else "#065f46",
+        }
+
+        cards_html = ""
+        for idx, item in enumerate(st.session_state.history):
             s_orig  = _html.escape(item.get("original", ""))
             s_trans = _html.escape(item.get("translation", ""))
-            st.markdown(f"""
-            <div class="history-card">
-                <div class="history-original">{s_orig}</div>
-                <div class="history-translation">{s_trans}</div>
-            </div>""", unsafe_allow_html=True)
+            card_id = f"hcard-{idx}"
+            cards_html += f"""
+            <div class="hcard" id="{card_id}" onclick="toggleHL('{card_id}')">
+                <div class="horig">{s_orig}</div>
+                <div class="htrans">{s_trans}</div>
+            </div>"""
+
+        card_count  = len(st.session_state.history)
+        iframe_h    = min(card_count * 115 + 20, 600)
+
+        components.html(f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    background: {_c['bg']};
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    padding: 4px 2px 4px 2px;
+    overflow-x: hidden;
+  }}
+  .hcard {{
+    background: {_c['card_bg']};
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+    border-left: 3px solid {_c['card_border']};
+    transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+  }}
+  .hcard:hover {{
+    background: {_c['card_hover']};
+    border-left-color: {_c['hl_border']};
+    transform: translateX(3px);
+  }}
+  .hcard.hl {{
+    background: {_c['hl_bg']} !important;
+    border-left: 3px solid {_c['hl_border']} !important;
+    box-shadow: {_c['hl_glow']};
+    transform: translateX(3px);
+  }}
+  .hcard.hl .horig {{
+    color: {_c['hl_orig']} !important;
+    font-weight: 600;
+  }}
+  .hcard.hl::after {{
+    content: '✦';
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: {_c['hl_border']};
+    font-size: 1.4rem;
+    opacity: 1;
+  }}
+  .horig  {{ font-size: 0.97rem; color: {_c['orig']}; line-height:1.5; margin-bottom:5px; transition: color 0.22s; }}
+  .htrans {{ font-size: 1.15rem; color: {_c['trans']}; font-style:italic; line-height:1.5; opacity:0.95; }}
+</style>
+</head>
+<body>
+{cards_html}
+<script>
+  var HLS_KEY = 'tdHighlights';
+  var highlighted = new Set(JSON.parse(sessionStorage.getItem(HLS_KEY) || '[]'));
+
+  // Restore on load
+  highlighted.forEach(function(id) {{
+    var el = document.getElementById(id);
+    if (el) el.classList.add('hl');
+  }});
+
+  function toggleHL(id) {{
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (highlighted.has(id)) {{
+      highlighted.delete(id);
+      el.classList.remove('hl');
+    }} else {{
+      highlighted.add(id);
+      el.classList.add('hl');
+    }}
+    sessionStorage.setItem(HLS_KEY, JSON.stringify(Array.from(highlighted)));
+  }}
+</script>
+</body>
+</html>
+""", height=iframe_h, scrolling=True)
 
     # ── Refresh loop ──────────────────────────────────────────
     if st.session_state.status_dict["running"]:
