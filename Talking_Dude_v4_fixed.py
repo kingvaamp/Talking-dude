@@ -136,6 +136,7 @@ _init_ss("summary_in_progress", lambda: False)
 _init_ss("summary_start_time", lambda: 0.0)
 _init_ss("current_page",      lambda: "main")  # "main" ou "summary"
 _init_ss("sidebar_hidden", lambda: False)
+_init_ss("highlighted_cards", set)
 
 
 # ── Theme config ──────────────────────────────────────────────────────────────
@@ -1408,115 +1409,42 @@ if st.session_state.current_page == "main":
         st.caption("Les phrases complètes apparaissent ici après chaque pause ou fin de phrase.")
     else:
         _is_dark = st.session_state.theme == "dark"
-        # Theme-aware colors (inlined — CSS vars don't cross iframe boundary)
-        _c = {
-            "bg":          "#0d1117"         if _is_dark else "#ffffff",
-            "card_bg":     "rgba(255,255,255,0.025)" if _is_dark else "#ffffff",
-            "card_hover":  "rgba(255,255,255,0.05)"  if _is_dark else "#f1f5f9",
-            "card_border": "rgba(0,200,255,0.35)"    if _is_dark else "rgba(2,132,199,0.35)",
-            "orig":        "#d0d8ee"         if _is_dark else "#1e293b",
-            "trans":       "#00b8d4"         if _is_dark else "#006080",
-            "hl_bg":       "rgba(0,210,100,0.13)"    if _is_dark else "rgba(16,185,129,0.22)",
-            "hl_border":   "#00d26a"         if _is_dark else "#047857",
-            "hl_glow":     "0 0 0 2px rgba(0,210,100,0.22),0 4px 22px rgba(0,210,100,0.18)" if _is_dark
-                           else "0 0 0 3px rgba(4,120,87,0.40),0 4px 22px rgba(16,185,129,0.30)",
-            "hl_orig":     "#00d26a"         if _is_dark else "#065f46",
-        }
 
-        cards_html = ""
+        # Theme-aware highlight colors (inline styles — works on all devices)
+        if _is_dark:
+            HL_CARD  = "background:rgba(0,210,100,0.13)!important;border-left:3px solid #00d26a!important;box-shadow:0 0 0 2px rgba(0,210,100,0.22),0 4px 22px rgba(0,210,100,0.18);transform:translateX(3px);"
+            HL_ORIG  = "color:#00d26a;font-weight:600;"
+            HL_COLOR = "#00d26a"
+        else:
+            HL_CARD  = "background:rgba(16,185,129,0.22)!important;border-left:3px solid #047857!important;box-shadow:0 0 0 3px rgba(4,120,87,0.40),0 4px 22px rgba(16,185,129,0.30);transform:translateX(3px);"
+            HL_ORIG  = "color:#065f46;font-weight:600;"
+            HL_COLOR = "#047857"
+
         for idx, item in enumerate(st.session_state.history):
+            is_hl   = idx in st.session_state.highlighted_cards
             s_orig  = _html.escape(item.get("original", ""))
             s_trans = _html.escape(item.get("translation", ""))
-            card_id = f"hcard-{idx}"
-            cards_html += f"""
-            <div class="hcard" id="{card_id}" onclick="toggleHL('{card_id}')">
-                <div class="horig">{s_orig}</div>
-                <div class="htrans">{s_trans}</div>
-            </div>"""
 
-        card_count  = len(st.session_state.history)
-        iframe_h    = min(card_count * 115 + 20, 600)
+            card_style = HL_CARD if is_hl else ""
+            orig_style = HL_ORIG if is_hl else ""
+            sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:1.4rem;color:{HL_COLOR};line-height:1">✦</span>' if is_hl else ""
 
-        components.html(f"""
-<!DOCTYPE html>
-<html>
-<head>
-<style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    background: {_c['bg']};
-    font-family: 'Space Grotesk', system-ui, sans-serif;
-    padding: 4px 2px 4px 2px;
-    overflow-x: hidden;
-  }}
-  .hcard {{
-    background: {_c['card_bg']};
-    border-radius: 12px;
-    padding: 14px 18px;
-    margin-bottom: 12px;
-    border-left: 3px solid {_c['card_border']};
-    transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
-    cursor: pointer;
-    user-select: none;
-    position: relative;
-  }}
-  .hcard:hover {{
-    background: {_c['card_hover']};
-    border-left-color: {_c['hl_border']};
-    transform: translateX(3px);
-  }}
-  .hcard.hl {{
-    background: {_c['hl_bg']} !important;
-    border-left: 3px solid {_c['hl_border']} !important;
-    box-shadow: {_c['hl_glow']};
-    transform: translateX(3px);
-  }}
-  .hcard.hl .horig {{
-    color: {_c['hl_orig']} !important;
-    font-weight: 600;
-  }}
-  .hcard.hl::after {{
-    content: '✦';
-    position: absolute;
-    right: 14px;
-    top: 50%;
-    transform: translateY(-50%);
-    color: {_c['hl_border']};
-    font-size: 1.4rem;
-    opacity: 1;
-  }}
-  .horig  {{ font-size: 0.97rem; color: {_c['orig']}; line-height:1.5; margin-bottom:5px; transition: color 0.22s; }}
-  .htrans {{ font-size: 1.15rem; color: {_c['trans']}; font-style:italic; line-height:1.5; opacity:0.95; }}
-</style>
-</head>
-<body>
-{cards_html}
-<script>
-  var HLS_KEY = 'tdHighlights';
-  var highlighted = new Set(JSON.parse(sessionStorage.getItem(HLS_KEY) || '[]'));
-
-  // Restore on load
-  highlighted.forEach(function(id) {{
-    var el = document.getElementById(id);
-    if (el) el.classList.add('hl');
-  }});
-
-  function toggleHL(id) {{
-    var el = document.getElementById(id);
-    if (!el) return;
-    if (highlighted.has(id)) {{
-      highlighted.delete(id);
-      el.classList.remove('hl');
-    }} else {{
-      highlighted.add(id);
-      el.classList.add('hl');
-    }}
-    sessionStorage.setItem(HLS_KEY, JSON.stringify(Array.from(highlighted)));
-  }}
-</script>
-</body>
-</html>
-""", height=iframe_h, scrolling=True)
+            col_card, col_btn = st.columns([11, 1])
+            with col_card:
+                st.markdown(f"""
+                <div class="history-card" style="{card_style}position:relative;">
+                    <div class="history-original" style="{orig_style}">{s_orig}</div>
+                    <div class="history-translation">{s_trans}</div>
+                    {sparkle}
+                </div>""", unsafe_allow_html=True)
+            with col_btn:
+                btn_icon = "✦" if is_hl else "◇"
+                if st.button(btn_icon, key=f"hl_{idx}", help="Toggle highlight"):
+                    if idx in st.session_state.highlighted_cards:
+                        st.session_state.highlighted_cards.discard(idx)
+                    else:
+                        st.session_state.highlighted_cards.add(idx)
+                    st.rerun()
 
     # ── Refresh loop ──────────────────────────────────────────
     if st.session_state.status_dict["running"]:
