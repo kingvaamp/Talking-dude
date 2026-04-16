@@ -6,13 +6,13 @@ import signal
 import sys
 
 # Configuration
-STREAMLIT_FILE = "Talking_Dude_v4_fixed.py"
+STREAMLIT_FILE = "Talking_Dude.py"
 PORT = 8501
 
 def start_streamlit():
     """Lancer le serveur Streamlit en arrière-plan."""
     print(f"🚀 Nettoyage des processus fantômes...")
-    os.system(f"pkill -f 'streamlit run {STREAMLIT_FILE}'")
+    os.system("pkill -f 'streamlit run'")
     time.sleep(0.5)
 
     print(f"🚀 Lancement de Streamlit ({STREAMLIT_FILE})...")

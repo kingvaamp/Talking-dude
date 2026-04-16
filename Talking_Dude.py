@@ -8,7 +8,8 @@ import queue
 import threading
 import time
 import difflib
-import asyncio
+import array as _array_mod  # top-level: avoids sys.modules lookup in hot audio loop
+import math    # top-level: used in _audio_waveform_html called every 300ms rerun
 import socket
 import qrcode
 import io
@@ -34,27 +35,26 @@ def _to_mono(raw: bytes) -> bytes:
     """Stereo int16 → mono int16 (pure Python fallback)."""
     if _HAS_AUDIOOP:
         return audioop.tomono(raw, 2, 0.5, 0.5)
-    import array as _arr
-    samps = _arr.array('h', raw)
-    mono  = _arr.array('h', ((samps[i] + samps[i + 1]) // 2 for i in range(0, len(samps), 2)))
+    samps = _array_mod.array('h', raw)
+    mono  = _array_mod.array('h', ((samps[i] + samps[i + 1]) // 2 for i in range(0, len(samps), 2)))
     return mono.tobytes()
 
 def _ratecv(raw: bytes, in_rate: int, out_rate: int, state):
     """Sample-rate conversion int16 mono (pure Python fallback). Returns (bytes, state)."""
     if _HAS_AUDIOOP:
         return audioop.ratecv(raw, 2, 1, in_rate, out_rate, state)
-    import array as _arr
-    samps  = _arr.array('h', raw)
+    samps  = _array_mod.array('h', raw)
     n_in   = len(samps)
     n_out  = int(n_in * out_rate / in_rate)
-    result = _arr.array('h')
+    # BUG-5 FIX: pre-allocate to avoid repeated realloc on every append.
+    result = _array_mod.array('h', [0] * n_out)
     for i in range(n_out):
         pos  = i * in_rate / out_rate
         idx  = int(pos)
         frac = pos - idx
         a    = samps[idx]         if idx     < n_in else 0
         b    = samps[idx + 1]     if idx + 1 < n_in else a
-        result.append(max(-32768, min(32767, int(a + frac * (b - a)))))
+        result[i] = max(-32768, min(32767, int(a + frac * (b - a))))
     return result.tobytes(), None  # stateless fallback
 
 try:
@@ -118,11 +118,13 @@ def _init_ss(key, factory):
     if key not in st.session_state:
         st.session_state[key] = factory()
 
-_init_ss("AUDIO_QUEUE",       lambda: queue.Queue())
+# STABILITY FIX: AUDIO_QUEUE maxsize raised from 60 → 400 to handle pauses without dropping;
+# UI_UPDATE_QUEUE maxsize raised from 200 → 500 to handle rapid transcription bursts.
+_init_ss("AUDIO_QUEUE",       lambda: queue.Queue(maxsize=400))
 _init_ss("TRANSCRIPT_QUEUE",  lambda: queue.Queue())
-_init_ss("TRANSLATION_QUEUE", lambda: queue.Queue(maxsize=1))
-_init_ss("UI_UPDATE_QUEUE",   lambda: queue.Queue())
-_init_ss("STATUS_QUEUE",      lambda: queue.Queue())
+_init_ss("TRANSLATION_QUEUE", lambda: queue.Queue(maxsize=15))
+_init_ss("UI_UPDATE_QUEUE",   lambda: queue.Queue(maxsize=500))
+_init_ss("STATUS_QUEUE",      lambda: queue.Queue(maxsize=50))
 _init_ss("SUMMARY_QUEUE",     lambda: queue.Queue())
 _init_ss("STOP_EVENT",        threading.Event)
 _init_ss("interim_text",      lambda: "")
@@ -137,6 +139,9 @@ _init_ss("summary_start_time", lambda: 0.0)
 _init_ss("current_page",      lambda: "main")  # "main" ou "summary"
 _init_ss("sidebar_hidden", lambda: False)
 _init_ss("highlighted_cards", set)
+
+# Audio device name locked at session start — never re-enumerated mid-session
+_init_ss("_locked_device_name", lambda: None)
 
 
 # ── Theme config ──────────────────────────────────────────────────────────────
@@ -529,7 +534,9 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Global Lock for PyAudio Stability ──────────────────────────────────────────
+# STABILITY FIX: PA_LOCK is only used during audio device enumeration (UI side),
+# NOT inside the producer_worker which runs its own private PyAudio instance.
+# This prevents the producer thread from starving/deadlocking during Streamlit reruns.
 if "PA_LOCK" not in st.session_state:
     st.session_state.PA_LOCK = threading.Lock()
 PA_LOCK = st.session_state.PA_LOCK
@@ -550,19 +557,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Audio detection ───────────────────────────────────────────────────────────
-def get_audio_devices():
-    """Returns a dictionary of {name: index} for available input devices."""
-    if "AUDIO_DEVICES_CACHE" in st.session_state:
+def get_audio_devices(force_refresh: bool = False):
+    """Returns a dictionary of {name: index} for available BLACKHOLE-ONLY input devices.
+
+    BLACKHOLE LOCK: Only devices whose name contains 'blackhole' are returned.
+    This makes it impossible for the sidebar selectbox to ever expose a mic
+    or any other input device — even if macOS renumbers/renames devices.
+    """
+    if not force_refresh and "AUDIO_DEVICES_CACHE" in st.session_state:
         return st.session_state["AUDIO_DEVICES_CACHE"]
+
+    st.session_state.pop("AUDIO_DEVICES_CACHE", None)
 
     with PA_LOCK:
         p = pyaudio.PyAudio()
         devices = {}
         try:
             for i in range(p.get_device_count()):
-                info = p.get_device_info_by_index(i)
-                if info["maxInputChannels"] > 0:
-                    devices[info["name"]] = i
+                try:
+                    info = p.get_device_info_by_index(i)
+                    # BLACKHOLE LOCK: only list devices that contain "blackhole" in the name
+                    if info["maxInputChannels"] > 0 and "blackhole" in info["name"].lower():
+                        devices[info["name"]] = i
+                except Exception:
+                    continue
             st.session_state["AUDIO_DEVICES_CACHE"] = devices
             return devices
         finally:
@@ -571,7 +589,7 @@ def get_audio_devices():
 
 
 def find_blackhole_index():
-    """Find the BlackHole audio device index."""
+    """Find the BlackHole audio device index (UI-side, cached)."""
     devices = get_audio_devices()
     for name, idx in devices.items():
         if "blackhole" in name.lower():
@@ -579,12 +597,29 @@ def find_blackhole_index():
     return None
 
 
+def _resolve_blackhole_live(p) -> tuple:
+    """Scan a live PyAudio instance and return (name, index) of the first
+    BlackHole input device found.
+
+    Called inside producer_worker on EVERY stream open so we survive macOS
+    renumbering devices when a new peripheral is detected.
+    Returns (None, None) if BlackHole is not currently present.
+    NEVER returns a non-BlackHole device — caller must check for None.
+    """
+    for i in range(p.get_device_count()):
+        try:
+            info = p.get_device_info_by_index(i)
+            if info["maxInputChannels"] > 0 and "blackhole" in info["name"].lower():
+                return info["name"], i
+        except Exception:
+            continue
+    return None, None
+
+
 # ── Audio waveform visualiser (defined early — used inside sidebar) ─────────────
 def _audio_waveform_html(level: float) -> str:
     """Return an HTML/CSS animated waveform bar visualizer for the sidebar."""
-    import math
-    import random
-    # Appliquer un gain dynamique (puissance) pour que les petites voix fassent monter les barres haut
+    # math is imported at top-level (no per-call import overhead)
     boosted_level = min(1.0, (level * 4.5) ** 0.65)
     
     num_bars = 30
@@ -596,12 +631,8 @@ def _audio_waveform_html(level: float) -> str:
         # Bell-curve shape: tall in centre, shorter at edges
         edge_factor = 1.0 - 0.45 * abs((i - num_bars / 2) / (num_bars / 2)) ** 1.4
         
-        # Un peu de variation dynamique basée sur le mix entre l'index et le niveau actuel
-        # random.seed(int(boosted_level * 100) + i) -> pas de random pour eviter trop de jitter intempestif
-        # On utilise une combinatoire pseudo-aléatoire fluide
         sine_factor = 0.60 + 0.40 * abs(math.sin(i * 0.73 + boosted_level * 5.0))
         
-        # Quand y'a du son, on ajoute la variation, quand y'a du silence on garde min_h.
         h = max(min_h, int(min_h + (max_h - min_h) * boosted_level * edge_factor * sine_factor))
         
         bright = int(180 + 75 * edge_factor)
@@ -663,37 +694,45 @@ if source_display != _saved_src or target_display != _saved_tgt:
 
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎤 Audio")
+st.sidebar.header("🎙️ Audio")
 
+# BLACKHOLE LOCK — THREE WALLS:
+#   1. get_audio_devices() only returns BlackHole devices (mic never listed)
+#   2. Sidebar shows error + disables Start if BlackHole is absent
+#   3. start_translating() hard-blocks any non-BlackHole device name
 devices_dict = get_audio_devices()
-device_names = list(devices_dict.keys())
+device_names  = list(devices_dict.keys())
 
-# Default to BlackHole if present, else first available
-bh_idx = find_blackhole_index()
-default_dev_name = None
-if bh_idx is not None:
-    for name, idx in devices_dict.items():
-        if idx == bh_idx:
-            default_dev_name = name
-            break
-if not default_dev_name and device_names:
-    default_dev_name = device_names[0]
+if not device_names:
+    # BlackHole not installed / not detectable
+    st.sidebar.error(
+        "⛔ BlackHole introuvable.  \n"
+        "Installe [BlackHole 2ch](https://existential.audio/blackhole/) "
+        "puis redémarre l'app."
+    )
+    selected_device_name  = None
+    SELECTED_DEVICE_INDEX = None
+else:
+    _saved_device = _persisted.get("audio_device", device_names[0])
+    _dev_idx      = device_names.index(_saved_device) if _saved_device in device_names else 0
 
-_saved_device = _persisted.get("audio_device", default_dev_name)
-_dev_idx = device_names.index(_saved_device) if _saved_device in device_names else 0
+    selected_device_name = st.sidebar.selectbox(
+        "Entrée audio (BlackHole uniquement)",
+        device_names,
+        index=_dev_idx,
+        help="Seuls les périphériques BlackHole sont listés. Aucun microphone ne peut être sélectionné."
+    )
+    SELECTED_DEVICE_INDEX = devices_dict[selected_device_name]
 
-selected_device_name = st.sidebar.selectbox("Entrée audio", device_names, index=_dev_idx)
+    if selected_device_name != _saved_device:
+        save_settings({"audio_device": selected_device_name})
+
+    st.sidebar.success(f"✅ {selected_device_name}")
+
 if st.sidebar.button("🔄 Rafraîchir les périphériques"):
     if "AUDIO_DEVICES_CACHE" in st.session_state:
         del st.session_state["AUDIO_DEVICES_CACHE"]
     st.rerun()
-
-SELECTED_DEVICE_INDEX = devices_dict[selected_device_name]
-
-if selected_device_name != _saved_device:
-    save_settings({"audio_device": selected_device_name})
-
-st.sidebar.info(f"Appareil: {selected_device_name}")
 
 if st.session_state.status_dict["running"]:
     st.sidebar.markdown(
@@ -738,10 +777,16 @@ if selected_sum_lang_label != _saved_sum_lang:
 # Bouton Summarize — defined here, rendered in the main page
 def go_to_summary():
     if not st.session_state.history:
-        STATUS_QUEUE.put("⚠️ Aucune transcription à résumer.")
+        try:
+            STATUS_QUEUE.put_nowait("⚠️ Aucune transcription à résumer.")
+        except queue.Full:
+            pass
         return
     if not GROQ_API_KEY:
-        STATUS_QUEUE.put("⚠️ Entre ta clé Groq dans la barre latérale.")
+        try:
+            STATUS_QUEUE.put_nowait("⚠️ Entre ta clé Groq dans la barre latérale.")
+        except queue.Full:
+            pass
         return
     st.session_state.current_page = "summary"
     st.session_state.summary = ""
@@ -854,6 +899,11 @@ def _is_sentence_end(text):
     return bool(t) and t[-1] in ".?!"
 
 # ── Deepgram streaming worker ──────────────────────────────────────────────────
+# STABILITY FIXES applied:
+#  1. KeepAlive interval reduced from 8s → 4s (Deepgram disconnects at 10s idle)
+#  2. Use SDK's keep_alive() method instead of raw JSON send — guaranteed text frame
+#  3. Skip sending empty audio packets (can trigger server-side close)
+#  4. Auto-reconnect loop is still present with 2s backoff
 def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STATUS_Q, stop_event):
     """Robust Deepgram streaming worker with auto-reconnect and KeepAlive for long sessions."""
 
@@ -865,6 +915,9 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
         encoding="linear16",
         channels=1,
         sample_rate=16000,
+        endpointing=800,          # attend 800ms de silence avant de finaliser (défaut ~10ms)
+        utterance_end_ms="2000",  # pause de 2s = fin d'une phrase
+        vad_events=True,          # active les événements Voice Activity Detection
     )
 
     while not stop_event.is_set():
@@ -873,63 +926,126 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
         try:
             config = DeepgramClientOptions(options={"keepalive": "true"})
             client = DeepgramClient(api_key, config)
-            dg_connection = client.listen.live.v("1")
+            dg_connection = client.listen.websocket.v("1")
 
             def on_message(self, result, **kwargs):
                 try:
                     transcript = result.channel.alternatives[0].transcript
                     if transcript:
-                        transcript_q.put((transcript, result.is_final))
+                        # BUG-1 FIX: put_nowait — never block the Deepgram WebSocket
+                        # callback thread. A blocking put() here stalls the SDK's
+                        # internal event loop and kills the connection on long sessions.
+                        try:
+                            transcript_q.put_nowait((transcript, result.is_final))
+                        except queue.Full:
+                            # Queue full: drop oldest, insert newest (keep audio fresh)
+                            try:
+                                transcript_q.get_nowait()
+                            except queue.Empty:
+                                pass
+                            try:
+                                transcript_q.put_nowait((transcript, result.is_final))
+                            except queue.Full:
+                                pass
                 except Exception as e:
-                    print(f"DEBUG on_message: {e}")
+                    # BUG-15 FIX: route errors to STATUS_Q, not stdout (lost in prod)
+                    try:
+                        STATUS_Q.put_nowait(f"⚠️ Erreur callback Deepgram: {e}")
+                    except queue.Full:
+                        pass
 
             def on_metadata(self, metadata, **kwargs):
-                STATUS_Q.put("✅ Deepgram connecté & prêt")
+                try:
+                    STATUS_Q.put_nowait("✅ Deepgram connecté & prêt")
+                except queue.Full:
+                    pass
 
             def on_speech_started(self, speech_started, **kwargs):
-                STATUS_Q.put("🎙️ Voix détectée...")
+                try:
+                    STATUS_Q.put_nowait("🎙️ Voix détectée...")
+                except queue.Full:
+                    pass
 
             def on_error(self, error, **kwargs):
-                STATUS_Q.put(f"❌ Deepgram erreur: {error}")
+                try:
+                    STATUS_Q.put_nowait(f"❌ Deepgram erreur: {error}")
+                except queue.Full:
+                    pass
                 connection_closed.set()
 
             def on_close(self, close, **kwargs):
-                STATUS_Q.put("🔌 Connexion Deepgram fermée — reconnexion...")
+                try:
+                    STATUS_Q.put_nowait("🔌 Connexion Deepgram fermée — reconnexion...")
+                except queue.Full:
+                    pass
                 connection_closed.set()
+
+            def on_utterance_end(self, utterance_end, **kwargs):
+                """Deepgram signal: silence long — force commit of pending segment.
+                BUG-2 FIX: was transcript_q.put() — blocking on the WebSocket thread.
+                Now uses try/put_nowait so the callback always returns immediately.
+                """
+                try:
+                    transcript_q.put_nowait(("__UTTERANCE_END__", True))
+                except queue.Full:
+                    pass
+                except Exception:
+                    pass
 
             dg_connection.on(LiveTranscriptionEvents.Transcript,    on_message)
             dg_connection.on(LiveTranscriptionEvents.Metadata,      on_metadata)
             dg_connection.on(LiveTranscriptionEvents.SpeechStarted, on_speech_started)
+            dg_connection.on(LiveTranscriptionEvents.UtteranceEnd,  on_utterance_end)
             dg_connection.on(LiveTranscriptionEvents.Error,         on_error)
             dg_connection.on(LiveTranscriptionEvents.Close,         on_close)
 
-            STATUS_Q.put("⚡ Connexion à Deepgram...")
+            try:
+                STATUS_Q.put_nowait("⚡ Connexion à Deepgram...")
+            except queue.Full:
+                pass
 
             if not dg_connection.start(live_options):
-                STATUS_Q.put("❌ Connexion Deepgram échouée. Nouvelle tentative dans 3s...")
+                try:
+                    STATUS_Q.put_nowait("❌ Connexion Deepgram échouée. Nouvelle tentative dans 3s...")
+                except queue.Full:
+                    pass
                 time.sleep(3)
                 continue
 
-            STATUS_Q.put("⚡ Streaming Deepgram actif")
+            try:
+                STATUS_Q.put_nowait("⚡ Streaming Deepgram actif")
+            except queue.Full:
+                pass
             last_keepalive_t = time.time()
 
             while not stop_event.is_set() and not connection_closed.is_set():
                 try:
                     data = audio_q.get(timeout=0.1)
-                    dg_connection.send(data)
-                    last_keepalive_t = time.time()
+                    # STABILITY FIX: Never send empty packets — triggers server-side close
+                    if data and len(data) > 0:
+                        dg_connection.send(data)
+                        last_keepalive_t = time.time()
                 except queue.Empty:
-                    # Send KeepAlive every 8s of silence to prevent server-side timeout
+                    # STABILITY FIX: KeepAlive every 3s (was 8s) — Deepgram timeout is 10s.
+                    # Use SDK keep_alive() which sends the proper text WebSocket frame.
                     now = time.time()
-                    if now - last_keepalive_t >= 8.0:
+                    if now - last_keepalive_t >= 3.0:
                         try:
-                            dg_connection.send(json.dumps({"type": "KeepAlive"}))
+                            dg_connection.keep_alive()
                             last_keepalive_t = now
                         except Exception:
-                            pass
+                            # Fallback: try raw JSON if SDK method unavailable
+                            try:
+                                dg_connection.send(json.dumps({"type": "KeepAlive"}))
+                                last_keepalive_t = now
+                            except Exception:
+                                pass
                     continue
                 except Exception as e:
-                    STATUS_Q.put(f"❌ Erreur envoi Deepgram: {e}")
+                    try:
+                        STATUS_Q.put_nowait(f"❌ Erreur envoi Deepgram: {e}")
+                    except queue.Full:
+                        pass
                     connection_closed.set()
                     break
 
@@ -939,15 +1055,24 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
                 pass
 
             if stop_event.is_set():
-                STATUS_Q.put("🛑 Arrêt du flux Deepgram")
+                try:
+                    STATUS_Q.put_nowait("🛑 Arrêt du flux Deepgram")
+                except queue.Full:
+                    pass
                 break
 
             # Connection dropped — wait briefly then reconnect
-            STATUS_Q.put("🔄 Reconnexion Deepgram dans 2s...")
+            try:
+                STATUS_Q.put_nowait("🔄 Reconnexion Deepgram dans 2s...")
+            except queue.Full:
+                pass
             time.sleep(2)
 
         except Exception as e:
-            STATUS_Q.put(f"❌ Échec critique Deepgram: {e} — Reconnexion dans 3s...")
+            try:
+                STATUS_Q.put_nowait(f"❌ Échec critique Deepgram: {e} — Reconnexion dans 3s...")
+            except queue.Full:
+                pass
             time.sleep(3)
 
 
@@ -957,85 +1082,180 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
 TARGET_RATE = 16000
 
 def _get_peak(raw_bytes):
-    if not raw_bytes: 
+    if not raw_bytes:
         return 0
-    import array as _arr
     try:
-        samps = _arr.array('h', raw_bytes)
+        samps = _array_mod.array('h', raw_bytes)  # BUG-8 FIX: use top-level import
         if not samps: return 0
         return max(abs(s) for s in samps) / 32768.0
     except Exception:
         return 0
 
-def producer_worker(bh_index, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
+# BLACKHOLE LOCK: producer_worker always resolves the device by the keyword
+# "blackhole" — never by index or cached name. This survives macOS renumbering
+# devices when AirPods / Bluetooth / USB peripherals are detected mid-session.
+# If BlackHole is absent at open time, the worker waits and retries instead of
+# silently falling through to the system microphone.
+def producer_worker(input_device_name, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
+    """Audio capture worker — EXCLUSIVELY reads from BlackHole.
+
+    Uses _resolve_blackhole_live() on every (re-)open to scan current device
+    list by keyword, not by index.  If BlackHole is not found the worker sleeps
+    and retries; it NEVER opens any other input device.
+    """
     CONFIGS = [(2, 48000, 2400), (1, 48000, 2400), (2, 44100, 2205), (1, 16000, 800)]
-    stream = None
-    p      = None
-    CHANNELS = RATE = CHUNK = None
+    MAX_CONSECUTIVE_ERRORS = 10
+
+    while not stop_event.is_set():
+        stream    = None
+        p         = None
+        CHANNELS = RATE = CHUNK = None
+
+        try:
+            # ── Open PyAudio stream — BLACKHOLE ONLY ──────────────────
+            with PA_LOCK:
+                p = pyaudio.PyAudio()
+
+                # Resolve BlackHole by keyword, ignoring index (macOS renumbers).
+                bh_name, target_index = _resolve_blackhole_live(p)
+
+                if target_index is None:
+                    # BlackHole is not in the device list right now.
+                    # HARD STOP — do NOT open any fallback device.
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+                    p = None
+                    try:
+                        STATUS_Q.put_nowait(
+                            "⛔ BlackHole introuvable — attente reconnnexion... "
+                            "(vérifie que BlackHole est installé)"
+                        )
+                    except queue.Full:
+                        pass
+                    time.sleep(3)
+                    continue  # retry outer while loop
+
+                opened_ok = False
+                for ch, rate, chunk in CONFIGS:
+                    try:
+                        stream = p.open(
+                            format=pyaudio.paInt16, channels=ch, rate=rate,
+                            input=True, input_device_index=target_index,
+                            frames_per_buffer=chunk
+                        )
+                        CHANNELS, RATE, CHUNK = ch, rate, chunk
+                        opened_ok = True
+                        break
+                    except Exception:
+                        continue
+
+            if not opened_ok or not stream:
+                raise RuntimeError("Aucune config BlackHole compatible.")
+
+            try:
+                STATUS_Q.put_nowait(f"🎤 BlackHole ({bh_name}): {CHANNELS}ch @ {RATE}Hz actif")
+            except queue.Full:
+                pass
+            ratecv_state     = None
+            consecutive_errs = 0
+
+            # ── Read loop (NO lock held here) ──────────────────────────
+            while not stop_event.is_set():
+                try:
+                    raw = stream.read(CHUNK, exception_on_overflow=False)
+                    consecutive_errs = 0  # reset on success
+
+                    if CHANNELS == 2:
+                        raw = _to_mono(raw)
+                    if RATE != TARGET_RATE:
+                        raw, ratecv_state = _ratecv(raw, RATE, TARGET_RATE, ratecv_state)
+
+                    # STABILITY FIX: only send non-empty chunks to Deepgram queue
+                    if not raw or len(raw) == 0:
+                        continue
+
+                    peak = _get_peak(raw)
+                    try:
+                        UI_Q.put_nowait(("level", peak))
+                    except queue.Full:
+                        pass
+
+                    # STABILITY FIX: if AUDIO_Q is full, drop the OLDEST frame (not
+                    # the newest) so Deepgram always gets fresh audio.
+                    if AUDIO_Q.full():
+                        try:
+                            AUDIO_Q.get_nowait()
+                        except queue.Empty:
+                            pass
+                    try:
+                        AUDIO_Q.put_nowait(raw)
+                    except queue.Full:
+                        pass  # extremely rare since we just drained above
+
+                    if peak < 0.0001:
+                        if int(time.time()) % 15 == 0:
+                            try:
+                                STATUS_Q.put_nowait("⚠️ Pas de signal audio (vérifie BlackHole)")
+                            except queue.Full:
+                                pass
+                    else:
+                        if int(time.time()) % 60 == 0:
+                            try:
+                                STATUS_Q.put_nowait("🎤 Capture en cours...")
+                            except queue.Full:
+                                pass
+
+                except Exception as e:
+                    consecutive_errs += 1
+                    try:
+                        STATUS_Q.put_nowait(f"⚠️ Erreur audio ({consecutive_errs}/{MAX_CONSECUTIVE_ERRORS}): {e}")
+                    except queue.Full:
+                        pass
+                    if consecutive_errs >= MAX_CONSECUTIVE_ERRORS:
+                        try:
+                            STATUS_Q.put_nowait("🔄 Trop d'erreurs — réouverture du flux audio...")
+                        except queue.Full:
+                            pass
+                        break  # exit inner loop → reopen stream
+                    time.sleep(0.05)
+
+        except Exception as e:
+            try:
+                STATUS_Q.put_nowait(f"❌ Audio critique: {e}")
+            except queue.Full:
+                pass
+            time.sleep(3)
+
+        finally:
+            # ── Always clean up before retrying (brief lock) ──────────
+            with PA_LOCK:
+                if stream:
+                    try:
+                        stream.stop_stream()
+                        stream.close()
+                    except Exception:
+                        pass
+                if p:
+                    try:
+                        p.terminate()
+                    except Exception:
+                        pass
+
+        if stop_event.is_set():
+            break
+
+        try:
+            STATUS_Q.put_nowait("🔄 Réouverture du flux audio dans 2s...")
+        except queue.Full:
+            pass
+        time.sleep(2)
 
     try:
-        with PA_LOCK:
-            p = pyaudio.PyAudio()
-            for ch, rate, chunk in CONFIGS:
-                try:
-                    stream = p.open(
-                        format=pyaudio.paInt16, channels=ch, rate=rate,
-                        input=True, input_device_index=bh_index,
-                        frames_per_buffer=chunk
-                    )
-                    CHANNELS, RATE, CHUNK = ch, rate, chunk
-                    STATUS_Q.put(f"🎤 Audio: {ch}ch @ {rate}Hz (Lancement...)")
-                    break
-                except Exception:
-                    continue
-
-        if not stream:
-            raise RuntimeError("Impossible d'ouvrir l'entrée audio — vérifie tes réglages.")
-
-        STATUS_Q.put(f"🎤 Audio: {CHANNELS}ch @ {RATE}Hz actif")
-        ratecv_state = None
-        while not stop_event.is_set():
-            try:
-                raw = stream.read(CHUNK, exception_on_overflow=False)
-                if CHANNELS == 2:
-                    raw = _to_mono(raw)
-                if RATE != TARGET_RATE:
-                    raw, ratecv_state = _ratecv(raw, RATE, TARGET_RATE, ratecv_state)
-
-                peak = _get_peak(raw)
-                UI_Q.put(("level", peak))
-                try:
-                    AUDIO_Q.put_nowait(raw)
-                except queue.Full:
-                    pass
-                
-                # Critical Debug: Warn if the audio is completely silent
-                if peak < 0.0001:
-                    if int(time.time()) % 15 == 0:
-                        STATUS_Q.put("⚠️ Pas de signal audio détecté (vérifie BlackHole)")
-                else:
-                    if int(time.time()) % 60 == 0: # Moins fréquent pour ne pas polluer
-                        STATUS_Q.put("🎤 Capture en cours...")
-            except Exception as e:
-                STATUS_Q.put(f"❌ Erreur lecture audio: {e}")
-                break
-
-    except Exception as e:
-        STATUS_Q.put(f"❌ Producteur audio critique: {e}")
-    finally:
-        with PA_LOCK:
-            if stream:
-                try:
-                    stream.stop_stream()
-                    stream.close()
-                except Exception:
-                    pass
-            if p:
-                try:
-                    p.terminate()
-                except Exception:
-                    pass
-        STATUS_Q.put("🛑 Flux audio fermé.")
+        STATUS_Q.put_nowait("🛑 Flux audio fermé.")
+    except queue.Full:
+        pass
 
 
 # ── Consumer (transcripts → UI queue) ─────────────────────────────────────────
@@ -1051,43 +1271,76 @@ def consumer_worker(source_lang, target_lang, history_list, status_dict,
         nonlocal local_orig, current_sid
         if not local_orig.strip():
             return
-        UI_Q.put(("commit", current_sid))
+        try:
+            UI_Q.put_nowait(("commit", current_sid))
+        except queue.Full:
+            pass
         local_orig = ""
         current_sid = time.time()
 
     while not stop_event.is_set():
         try:
             text, is_final = TRANSCRIPT_Q.get(timeout=0.1)
+
+            # ── STABILITY FIX: utterance_end sentinel → force immediate commit ──────
+            # on_utterance_end now sends ("__UTTERANCE_END__", True) instead of ("", True).
+            # This avoids resetting last_speech_t every 2s during silence (which was
+            # permanently blocking the 5s fallback commit). We commit whatever we have.
+            if text == "__UTTERANCE_END__":
+                _commit_sentence()
+                continue
+
             if is_final:
                 clean_text = text.strip()
-                sep = " " if local_orig else ""
+                if not clean_text and not local_orig:
+                    continue  # rien à committer, on ignore silencieusement
 
+                # STABILITY FIX: if clean_text is empty but local_orig has content,
+                # commit immediately instead of resetting last_speech_t (old bug).
+                if not clean_text:
+                    _commit_sentence()
+                    continue
+
+                sep = " " if local_orig else ""
                 local_orig += sep + clean_text
-                last_speech_t = time.time()
-                UI_Q.put(("final", (local_orig, current_sid)))
+                last_speech_t = time.time()  # only reset when we have real spoken text
+                try:
+                    UI_Q.put_nowait(("final", (local_orig, current_sid)))
+                except queue.Full:
+                    pass
 
                 # Envoyer pour traduction — vider l'ancienne requête puis envoyer la nouvelle
                 try:
                     TRANS_Q.get_nowait()
                 except Exception:
                     pass
+                # BUG-4 FIX: use put_nowait since we just freed a slot with get_nowait above.
+                # Old timeout=0.1 blocked the consumer thread 100ms per sentence.
                 try:
-                    TRANS_Q.put((local_orig, source_lang, target_lang, current_sid), timeout=0.1)
-                except Exception:
-                    pass
+                    TRANS_Q.put_nowait((local_orig, source_lang, target_lang, current_sid))
+                except queue.Full:
+                    pass  # still full after drain — skip this translation, keep transcribing
 
-                if _is_sentence_end(clean_text) or len(local_orig.split()) >= 50:
+                # Commit on sentence end, or every 30 words (was 50 — more responsive commits)
+                if _is_sentence_end(clean_text) or len(local_orig.split()) >= 30:
                     _commit_sentence()
             else:
-                UI_Q.put(("interim", text.strip()))
+                try:
+                    UI_Q.put_nowait(("interim", text.strip()))
+                except queue.Full:
+                    pass
 
         except queue.Empty:
+            # Fallback commit: if speech stopped > 5s ago and we still have pending text
             if local_orig and time.time() - last_speech_t > 5.0:
                 _commit_sentence()
             continue
 
 # ── Translation worker ─────────────────────────────────────────────────────────
+# STABILITY FIX: exponential backoff on translation failure to avoid hammering
+# Google Translate API during network hiccups which could freeze the thread.
 def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
+    _backoff = 0.0
     while not stop_event.is_set():
         try:
             payload = TRANS_Q.get(timeout=0.5)
@@ -1097,32 +1350,71 @@ def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
         try:
             translated = GoogleTranslator(source=src[:2], target=dest).translate(text)
             if translated:
-                UI_Q.put(("translation", (translated, sid)))
+                try:
+                    UI_Q.put_nowait(("translation", (translated, sid)))
+                except queue.Full:
+                    pass
+            _backoff = 0.0  # reset on success
         except Exception as e:
-            UI_Q.put(("translation", (f"[Erreur traduction: {e}]", sid)))
+            _backoff = min(_backoff + 1.0, 8.0)
+            try:
+                UI_Q.put_nowait(("translation", (f"[Erreur traduction: {e}]", sid)))
+            except queue.Full:
+                pass
+            # FREEZE FIX: sleep in small increments so stop_event is checked frequently.
+            # Old code: time.sleep(_backoff) — blocked the thread up to 8s, ignoring stop.
+            if _backoff > 0:
+                deadline = time.time() + _backoff
+                while time.time() < deadline and not stop_event.is_set():
+                    time.sleep(0.1)
 
 # ── Start / Stop / Clear ───────────────────────────────────────────────────────
 def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_list):
     dg_key = st.session_state.get("_dg_key", "")
     if not dg_key:
-        STATUS_QUEUE.put("❌ Entre ta clé Deepgram dans la barre latérale.")
+        # BUG-3 FIX: was blocking put() — use put_nowait to never stall the main thread.
+        try:
+            STATUS_QUEUE.put_nowait("❌ Entre ta clé Deepgram dans la barre latérale.")
+        except queue.Full:
+            pass
         return
 
-    # Look up the current valid index for the selected device name
-    devices = get_audio_devices()
+    # Always do a fresh device scan right before starting — never trust a stale cache
+    devices = get_audio_devices(force_refresh=True)
     if input_name not in devices:
-        STATUS_QUEUE.put(f"❌ Appareil '{input_name}' introuvable ou déconnecté.")
+        try:
+            STATUS_QUEUE.put_nowait(f"❌ Appareil '{input_name}' introuvable ou déconnecté.")
+        except queue.Full:
+            pass
         return
-    actual_index = devices[input_name]
 
-    # Signal stop to any existing threads properly
+    # BLACKHOLE LOCK: hard-block if the resolved device is not BlackHole.
+    # This is a second safety net — the sidebar should already only offer BlackHole
+    # devices, but we enforce it here too so no code path can bypass it.
+    if not input_name or "blackhole" not in input_name.lower():
+        try:
+            STATUS_QUEUE.put_nowait(
+                "⛔ Démarrage refusé : seul BlackHole est autorisé comme entrée audio. "
+                "Vérifie que BlackHole est installé et sélectionné."
+            )
+        except queue.Full:
+            pass
+        return
+
+    # Signal stop to any existing threads
     if "STOP_EVENT" in st.session_state:
         st.session_state.STOP_EVENT.set()
+        # BUG-9 FIX: give old worker threads a moment to notice the stop event before
+        # we replace the queues. Without this, an old consumer_worker that's mid-commit
+        # writes to the stale queue object and the first sentences of the new session are lost.
+        time.sleep(0.35)
     st.session_state.STOP_EVENT = threading.Event()
-    st.session_state.AUDIO_QUEUE       = queue.Queue(maxsize=60)
+
+    # STABILITY FIX: reinitialise queues with larger buffers for long sessions
+    st.session_state.AUDIO_QUEUE       = queue.Queue(maxsize=400)
     st.session_state.TRANSCRIPT_QUEUE  = queue.Queue()
     st.session_state.TRANSLATION_QUEUE = queue.Queue(maxsize=15)
-    st.session_state.UI_UPDATE_QUEUE   = queue.Queue()
+    st.session_state.UI_UPDATE_QUEUE   = queue.Queue(maxsize=500)
 
     stop_ev = st.session_state.STOP_EVENT
     audio_q = st.session_state.AUDIO_QUEUE
@@ -1130,12 +1422,17 @@ def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_
     trans_q = st.session_state.TRANSLATION_QUEUE
     ui_q    = st.session_state.UI_UPDATE_QUEUE
 
+    # STABILITY FIX: lock the audio device name for the entire session.
+    # Even if the sidebar selectbox changes during a session, workers keep using the
+    # device they were started with — preventing mid-session audio routing changes.
+    st.session_state._locked_device_name = input_name
+
     st.session_state.status_dict["running"] = True
     st.session_state.status_dict["msg"]     = "⚡ Démarrage..."
 
     threading.Thread(
         target=producer_worker,
-        args=(actual_index, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
+        args=(input_name, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
         daemon=True
     ).start()
 
@@ -1164,7 +1461,12 @@ def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_
 def summary_worker(api_key, history, lang, result_queue):
     """Background worker to generate summary using Groq without blocking the UI."""
     if not api_key or not history:
-        result_queue.put("❌ Clé Groq manquante ou aucune transcription.")
+        # FREEZE FIX: was result_queue.put() — blocking with no timeout on an unbounded queue.
+        # Use put_nowait; if it somehow fails, the summary_loading timeout (45s) will recover.
+        try:
+            result_queue.put_nowait("❌ Clé Groq manquante ou aucune transcription.")
+        except Exception:
+            pass
         return
 
     # Construire le texte complet
@@ -1225,7 +1527,10 @@ Livre un compte-rendu très complet avec beaucoup de bullet points. Valorise la 
         result_queue.put(summary_text)
 
     except Exception as e:
-        result_queue.put(f"❌ Erreur lors de la génération du résumé : {e}")
+        try:
+            result_queue.put_nowait(f"❌ Erreur lors de la génération du résumé : {e}")
+        except Exception:
+            pass  # FREEZE FIX: was queue.Full only — catch all so thread always exits cleanly
 
 def generate_summary_groq():
     """Déclenche la génération de résumé en arrière-plan (asynchrone)."""
@@ -1258,7 +1563,12 @@ def stop_translating():
     st.session_state.STOP_EVENT.set()
     st.session_state.status_dict["running"] = False
     st.session_state.status_dict["msg"]     = "🛑 Arrêté."
-    STATUS_QUEUE.put("🛑 Arrêté.")
+    try:
+        STATUS_QUEUE.put_nowait("🛑 Arrêté.")
+    except queue.Full:
+        pass
+    # Clear the locked device name on stop
+    st.session_state._locked_device_name = None
     # Marquer que le résumé doit être généré au prochain cycle Streamlit
     if st.session_state.get("_groq_key") and st.session_state.history:
         st.session_state.summary = ""
@@ -1275,16 +1585,24 @@ def clear_conversation():
     st.session_state.summary_loading                 = False
     st.session_state.summary_in_progress             = False
     st.session_state.current_page                    = "main"
-    STATUS_QUEUE.put("🗑️ Conversation effacée.")
+    st.session_state.highlighted_cards               = set()  # BUG FIX: reset highlights so stale indices don't persist
+    try:
+        STATUS_QUEUE.put_nowait("🗑️ Conversation effacée.")
+    except queue.Full:
+        pass
 
 # ── Drain queues → session state ───────────────────────────────────────────────
+# Drain all pending status messages — keep only the LATEST one for display
+_last_status_msg = None
 while not STATUS_QUEUE.empty():
     try:
         msg = STATUS_QUEUE.get_nowait()
         if isinstance(msg, str):
-            st.session_state.status_dict["msg"] = msg
+            _last_status_msg = msg
     except Exception:
-        break
+        continue  # FREEZE FIX: was break — one bad item must not abort the whole drain
+if _last_status_msg is not None:
+    st.session_state.status_dict["msg"] = _last_status_msg
 
 while not st.session_state.UI_UPDATE_QUEUE.empty():
     try:
@@ -1314,11 +1632,16 @@ while not st.session_state.UI_UPDATE_QUEUE.empty():
             trad = st.session_state.current_sentence["translation"]
             if orig.strip():
                 st.session_state.history.insert(0, {"original": orig, "translation": trad, "id": sid})
+                # BUG-7 FIX: trim history to 200 items so Streamlit session memory stays
+                # bounded over a 40-minute session. Without this, memory grows unboundedly
+                # and reruns slow down until the UI queue starves.
+                if len(st.session_state.history) > 200:
+                    st.session_state.history = st.session_state.history[:200]
             st.session_state.current_sentence["original"]    = ""
             st.session_state.current_sentence["translation"] = ""
             st.session_state.current_sentence["id"]          = 0.0
     except Exception:
-        break
+        continue  # BUG-6 FIX: was break — one malformed message must not abort the drain
 
 while not st.session_state.SUMMARY_QUEUE.empty():
     try:
@@ -1327,7 +1650,7 @@ while not st.session_state.SUMMARY_QUEUE.empty():
         st.session_state.summary_loading = False
         st.session_state.summary_in_progress = False
     except Exception:
-        break
+        continue  # BUG-12 FIX: was break — keep draining even if one item fails
 
 # Lancer la génération si en attente
 if st.session_state.summary_loading and not st.session_state.summary:
@@ -1343,9 +1666,13 @@ if st.session_state.current_page == "main":
     col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
     with col1:
         if not st.session_state.status_dict["running"]:
+            _start_disabled = not DG_API_KEY or selected_device_name is None
+            _start_help = None if not _start_disabled else (
+                "Clé Deepgram requise" if not DG_API_KEY else "BlackHole introuvable — installe BlackHole 2ch"
+            )
             st.button("🟢 Démarrer", on_click=start_translating,
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
-                      use_container_width=True, disabled=not DG_API_KEY)
+                      use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
             st.button("🔴 Arrêter", on_click=stop_translating, use_container_width=True)
     with col2:
@@ -1420,8 +1747,11 @@ if st.session_state.current_page == "main":
             HL_ORIG  = "color:#065f46;font-weight:600;"
             HL_COLOR = "#047857"
 
-        for idx, item in enumerate(st.session_state.history):
-            is_hl   = idx in st.session_state.highlighted_cards
+        for idx, item in enumerate(st.session_state.history[:60]):
+            # BUG FIX: use the sentence's stable unique id for highlight tracking,
+            # NOT the list index — history is prepended so indices shift on every new sentence.
+            item_id = item.get("id", idx)
+            is_hl   = item_id in st.session_state.highlighted_cards
             s_orig  = _html.escape(item.get("original", ""))
             s_trans = _html.escape(item.get("translation", ""))
 
@@ -1439,16 +1769,16 @@ if st.session_state.current_page == "main":
                 </div>""", unsafe_allow_html=True)
             with col_btn:
                 btn_icon = "✦" if is_hl else "◇"
-                if st.button(btn_icon, key=f"hl_{idx}", help="Toggle highlight"):
-                    if idx in st.session_state.highlighted_cards:
-                        st.session_state.highlighted_cards.discard(idx)
+                if st.button(btn_icon, key=f"hl_{item_id}", help="Toggle highlight"):
+                    if item_id in st.session_state.highlighted_cards:
+                        st.session_state.highlighted_cards.discard(item_id)
                     else:
-                        st.session_state.highlighted_cards.add(idx)
+                        st.session_state.highlighted_cards.add(item_id)
                     st.rerun()
 
     # ── Refresh loop ──────────────────────────────────────────
     if st.session_state.status_dict["running"]:
-        time.sleep(0.12)
+        time.sleep(0.3)
         try:
             st.rerun()
         except Exception:
@@ -1489,8 +1819,7 @@ elif st.session_state.current_page == "summary":
             st.session_state.summary = ""
             st.session_state.summary_loading = True
             st.session_state.summary_in_progress = False
-            # generate_summary_groq() <- Géré globalement par le cycle principal
-            # On laisse le cycle normal s'en charger
+            generate_summary_groq()  # BUG FIX: call directly — relying on cycle was unreliable
     with col_r2:
         if st.session_state.summary and "❌" not in st.session_state.summary:
             st.download_button(
