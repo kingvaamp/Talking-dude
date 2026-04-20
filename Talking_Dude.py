@@ -387,8 +387,6 @@ st.markdown(f"""
     /* ── History Cards ── */
     .history-card {{
         background: var(--hist-bg);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
         border-radius: 12px;
         padding: 16px 20px;
         margin-bottom: 12px;
@@ -400,13 +398,6 @@ st.markdown(f"""
         position: relative;
         cursor: pointer;
         user-select: none;
-        opacity: 0;
-        animation: td-card-in 350ms var(--ease-out-strong) forwards;
-        animation-delay: var(--stagger, 0ms);
-    }}
-    @keyframes td-card-in {{
-        from {{ opacity: 0; transform: translateY(8px); }}
-        to   {{ opacity: 1; transform: translateY(0); }}
     }}
     .history-card:hover {{
         background: var(--hist-hover);
@@ -646,7 +637,7 @@ st.markdown(f"""
     /* ── prefers-reduced-motion ── */
     @media (prefers-reduced-motion: reduce) {{
         .live-dot {{ animation: none; opacity: 1; }}
-        .history-card {{ animation: none; opacity: 1; }}
+        .history-card {{ animation: none; }}
         .history-card:hover {{ transform: none; }}
         .stButton > button:hover {{ transform: none; }}
         .stButton > button:active {{ transform: none !important; }}
@@ -2243,13 +2234,10 @@ if st.session_state.current_page == "main":
             orig_style = HL_ORIG if is_hl else ""
             sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%) rotate(45deg);width:10px;height:10px;background:{HL_COLOR};border-radius:2px;opacity:0.7"></span>' if is_hl else ""
 
-            # Stagger delay: 40ms per card, capped at 400ms (10 cards visible stagger)
-            _stagger_ms = min(idx * 40, 400)
-
             col_card, col_btn = st.columns([11, 1])
             with col_card:
                 st.markdown(f"""
-                <div class="history-card" style="--stagger:{_stagger_ms}ms;{card_style}position:relative;">
+                <div class="history-card" style="{card_style}position:relative;">
                     <div class="history-original" style="{orig_style}">{s_orig}</div>
                     <div class="history-translation">{s_trans}</div>
                     {sparkle}
