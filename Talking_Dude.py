@@ -255,11 +255,12 @@ else:
 _rec_css = ""
 if st.session_state.status_dict.get("running"):
     _rec_css = """
-@keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.25}}
-.td-rec-btn .stButton > button {
-    border-color: rgba(239,68,68,0.35) !important;
+@keyframes td-rec-blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
+[data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child .stButton > button {
+    border-color: rgba(239,68,68,0.40) !important;
+    color: #EF4444 !important;
 }
-.td-rec-btn .stButton > button::before {
+[data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child .stButton > button::before {
     content: '';
     display: inline-block;
     width: 8px;
@@ -2157,9 +2158,7 @@ if st.session_state.current_page == "main":
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
-            st.markdown('<div class="td-rec-btn">', unsafe_allow_html=True)
             st.button("Arrêter", on_click=stop_translating, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
     with col2:
         st.button("Effacer", on_click=clear_conversation, use_container_width=True)
     with col3:
