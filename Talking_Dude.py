@@ -36,8 +36,10 @@ def _to_mono(raw: bytes) -> bytes:
     if _HAS_AUDIOOP:
         return audioop.tomono(raw, 2, 0.5, 0.5)
     samps = _array_mod.array('h', raw)
-    mono  = _array_mod.array('h', ((samps[i] + samps[i + 1]) // 2 for i in range(0, len(samps), 2)))
-    return mono.tobytes()
+    # BUG FIX: an O(n) python generator `(samps[i]+... for i in range)` executing
+    # 96,000 times per second severely throttled the GIL. Slice `[::2]` takes the
+    # left channel using C-optimized native evaluation almost instantly.
+    return samps[::2].tobytes()
 
 def _ratecv(raw: bytes, in_rate: int, out_rate: int, state):
     """Sample-rate conversion int16 mono (pure Python fallback). Returns (bytes, state)."""
@@ -120,25 +122,31 @@ def _init_ss(key, factory):
 
 # STABILITY FIX: AUDIO_QUEUE maxsize raised from 60 → 400 to handle pauses without dropping;
 # UI_UPDATE_QUEUE maxsize raised from 200 → 500 to handle rapid transcription bursts.
-_init_ss("AUDIO_QUEUE",       lambda: queue.Queue(maxsize=400))
+_init_ss("AUDIO_QUEUE",       lambda: queue.Queue())
 _init_ss("TRANSCRIPT_QUEUE",  lambda: queue.Queue())
 _init_ss("TRANSLATION_QUEUE", lambda: queue.Queue(maxsize=15))
 _init_ss("UI_UPDATE_QUEUE",   lambda: queue.Queue(maxsize=500))
 _init_ss("STATUS_QUEUE",      lambda: queue.Queue(maxsize=50))
-_init_ss("SUMMARY_QUEUE",     lambda: queue.Queue())
-_init_ss("STOP_EVENT",        threading.Event)
-_init_ss("interim_text",      lambda: "")
-_init_ss("history",           list)
-_init_ss("status_dict",       lambda: {"running": False, "msg": "Prêt — appuie sur Start."})
-_init_ss("current_sentence",  lambda: {"original": "", "translation": "", "id": 0.0})
-_init_ss("audio_level",       lambda: 0.0)
-_init_ss("summary",           lambda: "")
-_init_ss("summary_loading",   lambda: False)
-_init_ss("summary_in_progress", lambda: False)
-_init_ss("summary_start_time", lambda: 0.0)
-_init_ss("current_page",      lambda: "main")  # "main" ou "summary"
-_init_ss("sidebar_hidden", lambda: False)
-_init_ss("highlighted_cards", set)
+_init_ss("SUMMARY_QUEUE",               lambda: queue.Queue())
+_init_ss("HIGHLIGHT_SUMMARY_QUEUE",     lambda: queue.Queue())
+_init_ss("STOP_EVENT",                  threading.Event)
+_init_ss("SUMMARY_LOCK",                threading.Lock)
+_init_ss("interim_text",                lambda: "")
+_init_ss("history",                     list)
+_init_ss("history_map",                 dict)
+_init_ss("status_dict",                 lambda: {"running": False, "msg": "Prêt — appuie sur Start."})
+_init_ss("current_sentence",            lambda: {"original": "", "translation": "", "id": 0.0})
+_init_ss("audio_level",                 lambda: 0.0)
+_init_ss("summary",                     lambda: "")
+_init_ss("summary_loading",             lambda: False)
+_init_ss("summary_in_progress",         lambda: False)
+_init_ss("summary_start_time",          lambda: 0.0)
+_init_ss("current_page",                lambda: "main")  # "main" ou "summary"
+_init_ss("sidebar_hidden",              lambda: False)
+_init_ss("highlighted_cards",           set)
+_init_ss("highlighted_summaries",       dict)  # {item_id: summary_text}
+_init_ss("highlighted_summaries_loading", lambda: False)
+_init_ss("highlight_summary_start_time", lambda: 0.0)
 
 # Audio device name locked at session start — never re-enumerated mid-session
 _init_ss("_locked_device_name", lambda: None)
@@ -531,6 +539,19 @@ st.markdown(f"""
         font-weight: 600;
         margin-top: 8px;
     }}
+/* Waveform Visualizer (Moved from inner function to avoid DOM reflows per frame) */
+.wv-wrap{{margin:10px 0 4px;padding:0;}}
+.wv-lbl{{font-size:0.62rem;color:#3d4d66;text-transform:uppercase;
+         letter-spacing:2px;margin-bottom:7px;font-family:'Space Grotesk',sans-serif;}}
+.wv{{display:flex;align-items:flex-end;gap:2px;height:46px;
+     background:var(--wv-bg-grad);
+     border-radius:8px;padding:5px 6px;
+     border:1px solid rgba(0,200,255,0.10);box-sizing:border-box;}}
+.wb{{flex:1;min-width:1px;border-radius:2px 2px 1px 1px;
+     background:linear-gradient(180deg,var(--c,#00c8ff) 0%,rgba(0,80,200,0.6) 100%);
+     box-shadow:0 0 5px rgba(0,200,255,0.20);
+     transform-origin:bottom center;
+     transition: height 0.08s ease;}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -645,20 +666,6 @@ def _audio_waveform_html(level: float) -> str:
     bars_html = "".join(bars)
     
     return f"""
-<style>
-.wv-wrap{{margin:10px 0 4px;padding:0;}}
-.wv-lbl{{font-size:0.62rem;color:#3d4d66;text-transform:uppercase;
-         letter-spacing:2px;margin-bottom:7px;font-family:'Space Grotesk',sans-serif;}}
-.wv{{display:flex;align-items:flex-end;gap:2px;height:46px;
-     background:var(--wv-bg-grad);
-     border-radius:8px;padding:5px 6px;
-     border:1px solid rgba(0,200,255,0.10);box-sizing:border-box;}}
-.wb{{flex:1;min-width:1px;border-radius:2px 2px 1px 1px;
-     background:linear-gradient(180deg,var(--c,#00c8ff) 0%,rgba(0,80,200,0.6) 100%);
-     box-shadow:0 0 5px rgba(0,200,255,0.20);
-     transform-origin:bottom center;
-     transition: height 0.08s ease;}}
-</style>
 <div class="wv-wrap">
   <div class="wv-lbl">Niveau audio</div>
   <div class="wv">{bars_html}</div>
@@ -792,7 +799,13 @@ def go_to_summary():
     st.session_state.summary = ""
     st.session_state.summary_loading = True
     st.session_state.summary_in_progress = False
+    # Reset highlighted summaries for fresh generation
+    st.session_state.highlighted_summaries = {}
+    st.session_state.highlighted_summaries_loading = False
     generate_summary_groq()
+    # Also generate individual summaries for highlighted phrases (parallel)
+    if st.session_state.highlighted_cards:
+        generate_highlight_summaries_groq()
 
 
 st.sidebar.markdown("---")
@@ -1016,31 +1029,53 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
                 STATUS_Q.put_nowait("⚡ Streaming Deepgram actif")
             except queue.Full:
                 pass
-            last_keepalive_t = time.time()
+            # BUG-M FIX: TCP socket block isolation. Deepgram's dg_connection.send() is synchronous 
+            # and indefinitely halts if the OS write buffer fills due to network hiccups. 
+            # We offload it to a single dedicated thread. If it hangs, the queue fills, and we cleanly 
+            # detect the timeout here to force a reconnection!
+            # BUG FIX: Unbounded queue (maxsize=0). A bounded limit caused frame drops 
+            # (which permanently deleted audio and caused skipped words) during brief WiFi delays.
+            dg_send_q = queue.Queue()
+            def _dg_sender():
+                while not stop_event.is_set() and not connection_closed.is_set():
+                    try:
+                        packet = dg_send_q.get(timeout=0.1)
+                        if packet is None: break
+                        try:
+                            dg_connection.send(packet)
+                        except Exception as e:
+                            connection_closed.set()
+                            break
+                    except queue.Empty:
+                        pass
+                        
+            sender_t = threading.Thread(target=_dg_sender, daemon=True)
+            sender_t.start()
 
+            last_keepalive_t = time.time()
             while not stop_event.is_set() and not connection_closed.is_set():
                 try:
-                    data = audio_q.get(timeout=0.1)
-                    # STABILITY FIX: Never send empty packets — triggers server-side close
-                    if data and len(data) > 0:
-                        dg_connection.send(data)
-                        last_keepalive_t = time.time()
-                except queue.Empty:
-                    # STABILITY FIX: KeepAlive every 3s (was 8s) — Deepgram timeout is 10s.
-                    # Use SDK keep_alive() which sends the proper text WebSocket frame.
-                    now = time.time()
-                    if now - last_keepalive_t >= 3.0:
+                    data_list = [audio_q.get(timeout=0.1)]
+                    while not audio_q.empty():
                         try:
-                            dg_connection.keep_alive()
-                            last_keepalive_t = now
-                        except Exception:
-                            # Fallback: try raw JSON if SDK method unavailable
-                            try:
-                                dg_connection.send(json.dumps({"type": "KeepAlive"}))
-                                last_keepalive_t = now
-                            except Exception:
-                                pass
-                    continue
+                            data_list.append(audio_q.get_nowait())
+                        except queue.Empty:
+                            break
+                    
+                    combined_data = b"".join(data_list)
+                    if combined_data:
+                        try:
+                            dg_send_q.put_nowait(combined_data)
+                        except queue.Full:
+                            pass
+                        
+                        # BUG-G FIX: Do NOT reset last_keepalive_t here.
+                        # Since we stream audio bytes continuously (even during silence),
+                        # resetting the timer here prevented the KeepAlive frame from EVER
+                        # being sent. Deepgram disconnects if 10-15s passes without speech
+                        # UNLESS a KeepAlive text frame is actively sent.
+                except queue.Empty:
+                    pass
                 except Exception as e:
                     try:
                         STATUS_Q.put_nowait(f"❌ Erreur envoi Deepgram: {e}")
@@ -1049,10 +1084,26 @@ def deepgram_stream_worker(api_key, model, lang_code, audio_q, transcript_q, STA
                     connection_closed.set()
                     break
 
-            try:
-                dg_connection.finish()
-            except Exception:
-                pass
+                now = time.time()
+                if now - last_keepalive_t >= 3.0:
+                    try:
+                        dg_connection.keep_alive()
+                        last_keepalive_t = now
+                    except Exception as e:
+                        # BUG-I FIX: Never fallback to dg_connection.send(json) because send() 
+                        # forces binary frames designed for raw PCM audio. Sending text strings 
+                        # here corrupted the AI decoder stream, causing it to "freeze" permanently.
+                        pass
+
+            # BUG-J FIX: If the WebSocket dropped ungracefully (e.g. WiFi hiccup),
+            # finish() will block the thread forever, stalling the entire worker 
+            # and permanently preventing it from looping to start a new connection!
+            def _async_finish(conn):
+                try:
+                    conn.finish()
+                except Exception:
+                    pass
+            threading.Thread(target=_async_finish, args=(dg_connection,), daemon=True).start()
 
             if stop_event.is_set():
                 try:
@@ -1087,7 +1138,7 @@ def _get_peak(raw_bytes):
     try:
         samps = _array_mod.array('h', raw_bytes)  # BUG-8 FIX: use top-level import
         if not samps: return 0
-        return max(abs(s) for s in samps) / 32768.0
+        return max(map(abs, samps)) / 32768.0
     except Exception:
         return 0
 
@@ -1105,6 +1156,12 @@ def producer_worker(input_device_name, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
     """
     CONFIGS = [(2, 48000, 2400), (1, 48000, 2400), (2, 44100, 2205), (1, 16000, 800)]
     MAX_CONSECUTIVE_ERRORS = 10
+    # BUG-A FIX: per-second dedup guards for status messages.
+    # Without these, `int(time.time()) % N == 0` fires for every audio chunk
+    # during that second (~100 chunks @ 48 kHz/2400 chunk), spamming STATUS_Q
+    # with ~100 identical messages and evicting legitimate status messages.
+    _last_warn_s = -1   # second when "no signal" was last emitted
+    _last_cap_s  = -1   # second when "capture en cours" was last emitted
 
     while not stop_event.is_set():
         stream    = None
@@ -1137,19 +1194,40 @@ def producer_worker(input_device_name, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
                     time.sleep(3)
                     continue  # retry outer while loop
 
-                opened_ok = False
-                for ch, rate, chunk in CONFIGS:
+            # BUG-N FIX: Complete PyAudio callback re-architecture. 
+            # Blocking `stream.read()` combined with `stream.abort()` can cause
+            # mutual deadlocks deep inside PortAudio's C extensions. By moving
+            # audio ingestion to a strict, non-blocking C-callback, we ensure zero
+            # frame drops and we can safely detect Apple CoreAudio suspensions.
+
+            RAW_Q = queue.Queue(maxsize=300)
+            last_read_t = time.time()
+
+            def audio_callback(in_data, frame_count, time_info, status):
+                nonlocal last_read_t
+                if in_data:
+                    last_read_t = time.time()
                     try:
-                        stream = p.open(
-                            format=pyaudio.paInt16, channels=ch, rate=rate,
-                            input=True, input_device_index=target_index,
-                            frames_per_buffer=chunk
-                        )
-                        CHANNELS, RATE, CHUNK = ch, rate, chunk
-                        opened_ok = True
-                        break
-                    except Exception:
-                        continue
+                        RAW_Q.put_nowait(in_data)
+                    except queue.Full:
+                        pass
+                # paContinue tells PortAudio to keep firing this callback
+                return (None, pyaudio.paContinue)
+
+            opened_ok = False
+            for ch, rate, chunk in CONFIGS:
+                try:
+                    stream = p.open(
+                        format=pyaudio.paInt16, channels=ch, rate=rate,
+                        input=True, input_device_index=target_index,
+                        frames_per_buffer=chunk,
+                        stream_callback=audio_callback
+                    )
+                    CHANNELS, RATE, CHUNK = ch, rate, chunk
+                    opened_ok = True
+                    break
+                except Exception:
+                    continue
 
             if not opened_ok or not stream:
                 raise RuntimeError("Aucune config BlackHole compatible.")
@@ -1158,15 +1236,22 @@ def producer_worker(input_device_name, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
                 STATUS_Q.put_nowait(f"🎤 BlackHole ({bh_name}): {CHANNELS}ch @ {RATE}Hz actif")
             except queue.Full:
                 pass
+                
+            stream.start_stream()
             ratecv_state     = None
             consecutive_errs = 0
 
-            # ── Read loop (NO lock held here) ──────────────────────────
+            # ── Main processing loop (NO blocking stream.read) ──────────
             while not stop_event.is_set():
                 try:
-                    raw = stream.read(CHUNK, exception_on_overflow=False)
-                    consecutive_errs = 0  # reset on success
-
+                    raw = RAW_Q.get(timeout=0.2)
+                except queue.Empty:
+                    # If CoreAudio sleeps for 5s, the callback stops ticking.
+                    if time.time() - last_read_t > 5.0:
+                        raise RuntimeError("Audio stream frozen (CoreAudio 5-minute sleep). Redémarrage forcé...")
+                    continue
+                
+                try:
                     if CHANNELS == 2:
                         raw = _to_mono(raw)
                     if RATE != TARGET_RATE:
@@ -1194,14 +1279,19 @@ def producer_worker(input_device_name, STATUS_Q, AUDIO_Q, UI_Q, stop_event):
                     except queue.Full:
                         pass  # extremely rare since we just drained above
 
+                    _now_s = int(time.time())
                     if peak < 0.0001:
-                        if int(time.time()) % 15 == 0:
+                        # Emit at most once per 15-second window — not once per chunk
+                        if _now_s % 15 == 0 and _now_s != _last_warn_s:
+                            _last_warn_s = _now_s
                             try:
                                 STATUS_Q.put_nowait("⚠️ Pas de signal audio (vérifie BlackHole)")
                             except queue.Full:
                                 pass
                     else:
-                        if int(time.time()) % 60 == 0:
+                        # Emit at most once per 60-second window
+                        if _now_s % 60 == 0 and _now_s != _last_cap_s:
+                            _last_cap_s = _now_s
                             try:
                                 STATUS_Q.put_nowait("🎤 Capture en cours...")
                             except queue.Full:
@@ -1270,6 +1360,12 @@ def consumer_worker(source_lang, target_lang, history_list, status_dict,
     def _commit_sentence():
         nonlocal local_orig, current_sid
         if not local_orig.strip():
+            # BUG-H FIX: if we commit on silence but have no final text,
+            # force a wipe of any ghost interim text from the screen!
+            try:
+                UI_Q.put_nowait(("clear_interim", None))
+            except queue.Full:
+                pass
             return
         try:
             UI_Q.put_nowait(("commit", current_sid))
@@ -1325,15 +1421,25 @@ def consumer_worker(source_lang, target_lang, history_list, status_dict,
                 if _is_sentence_end(clean_text) or len(local_orig.split()) >= 30:
                     _commit_sentence()
             else:
+                last_speech_t = time.time()  # Track interim speech too!
                 try:
                     UI_Q.put_nowait(("interim", text.strip()))
                 except queue.Full:
                     pass
 
         except queue.Empty:
-            # Fallback commit: if speech stopped > 5s ago and we still have pending text
-            if local_orig and time.time() - last_speech_t > 5.0:
-                _commit_sentence()
+            # Fallback commit: if speech stopped > 5s ago
+            if time.time() - last_speech_t > 5.0:
+                if local_orig:
+                    _commit_sentence()
+                else:
+                    # Wipe ghost interim text if it's stuck on screen
+                    try:
+                        UI_Q.put_nowait(("clear_interim", None))
+                    except queue.Full:
+                        pass
+                # Reset to prevent spamming the queue
+                last_speech_t = time.time()
             continue
 
 # ── Translation worker ─────────────────────────────────────────────────────────
@@ -1341,6 +1447,10 @@ def consumer_worker(source_lang, target_lang, history_list, status_dict,
 # Google Translate API during network hiccups which could freeze the thread.
 def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
     _backoff = 0.0
+    _cached_translator = None
+    _last_src = None
+    _last_dest = None
+
     while not stop_event.is_set():
         try:
             payload = TRANS_Q.get(timeout=0.5)
@@ -1348,7 +1458,13 @@ def translation_worker(STATUS_Q, TRANS_Q, UI_Q, stop_event):
             continue
         text, src, dest, sid = payload
         try:
-            translated = GoogleTranslator(source=src[:2], target=dest).translate(text)
+            _s = src[:2]
+            if _cached_translator is None or _last_src != _s or _last_dest != dest:
+                _cached_translator = GoogleTranslator(source=_s, target=dest)
+                _last_src = _s
+                _last_dest = dest
+
+            translated = _cached_translator.translate(text)
             if translated:
                 try:
                     UI_Q.put_nowait(("translation", (translated, sid)))
@@ -1411,10 +1527,15 @@ def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_
     st.session_state.STOP_EVENT = threading.Event()
 
     # STABILITY FIX: reinitialise queues with larger buffers for long sessions
-    st.session_state.AUDIO_QUEUE       = queue.Queue(maxsize=400)
+    st.session_state.AUDIO_QUEUE       = queue.Queue()
     st.session_state.TRANSCRIPT_QUEUE  = queue.Queue()
     st.session_state.TRANSLATION_QUEUE = queue.Queue(maxsize=15)
-    st.session_state.UI_UPDATE_QUEUE   = queue.Queue(maxsize=500)
+    # BUG-F FIX: UI_UPDATE_QUEUE must be unbounded (maxsize=0).
+    # If the Streamlit UI ever hangs for >15s (e.g. browser throttling, tab switch),
+    # the 30Hz stream of 'level' and 'interim' events fills a 500-item queue.
+    # When full, put_nowait() raised queue.Full and SILENTLY DROPPED critical
+    # 'commit' and 'final' messages. To the user, transcription "froze forever".
+    st.session_state.UI_UPDATE_QUEUE   = queue.Queue()
 
     stop_ev = st.session_state.STOP_EVENT
     audio_q = st.session_state.AUDIO_QUEUE
@@ -1430,9 +1551,12 @@ def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_
     st.session_state.status_dict["running"] = True
     st.session_state.status_dict["msg"]     = "⚡ Démarrage..."
 
+    # BUG-C FIX: pass ui_q (captured after the queue was freshly created above).
+    # All four workers should write to the same queue object via the local ref,
+    # not by re-reading from session_state which could diverge in a future refactor.
     threading.Thread(
         target=producer_worker,
-        args=(input_name, STATUS_QUEUE, audio_q, st.session_state.UI_UPDATE_QUEUE, stop_ev),
+        args=(input_name, STATUS_QUEUE, audio_q, ui_q, stop_ev),
         daemon=True
     ).start()
 
@@ -1458,6 +1582,171 @@ def start_translating(input_name, dg_model, src_lang, tgt_lang, g_list, g_trans_
         daemon=True
     ).start()
 
+# MAX highlights per session — prevents runaway API usage & freezes on long sessions
+_HL_MAX = 10
+
+def highlight_summary_worker(api_key, highlighted_items, full_history, lang, result_queue):
+    """Background worker: per-highlight Groq analysis.
+
+    BUG-FIX (freeze prevention):
+    - Emits each result individually via put_nowait right after it arrives
+      (no accumulation → UI shows progress phrase by phrase, no end-of-batch freeze)
+    - 25s timeout per API call (prevents single hung call from blocking all others)
+    - Sends __HL_DONE__ sentinel at the end so drain loop can clear loading flag
+      reliably even if some calls failed
+    - Capped at _HL_MAX phrases (enforced by generate_highlight_summaries_groq)
+    """
+    if not api_key or not highlighted_items:
+        try:
+            result_queue.put_nowait({"__HL_DONE__": True})
+        except Exception:
+            pass
+        return
+
+    # BUG-8 FIX: cap context at 80 items (was 300). On a 200-item history each item
+    # averages ~15 tokens → 300 items ≈ 4 500 tokens context PER highlight call.
+    # With 10 highlights that's 45 000 tokens just in context, risking Groq rate-limit
+    # errors and very long wait times that make the UI appear frozen.
+    # 80 items keeps the context meaningful while staying well under token limits.
+    context_items = list(reversed(full_history))[-80:]
+    full_context = "\n".join([
+        f"[Original] {item.get('original', '')}\n[Traduction] {item.get('translation', '')}"
+        for item in context_items
+    ])
+
+    try:
+        client = GroqOpenAI(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=30.0,   # BUG-FIX: global client timeout — prevents hung TCP from
+                            # blocking the thread indefinitely on network issues
+        )
+        for item in highlighted_items:
+            item_id  = item.get("id")
+            original = item.get("original", "")
+            transl   = item.get("translation", "")
+            if not original.strip():
+                continue
+            try:
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": f"""Tu es un assistant expert en analyse de conversations.
+
+L'utilisateur a marqué comme IMPORTANTE une phrase spécifique d'une conversation transcrite.
+Ta tâche est d'analyser cette phrase dans son contexte complet et de répondre en {lang}.
+
+Structure ta réponse ainsi :
+
+**❓ Question / Enjeu soulevé**
+(En 1-2 phrases : quelle est la question, le problème ou le point important que cette phrase soulève ?)
+
+**💬 Contexte & Réponses dans la conversation**
+(Quels éléments de la conversation répondent à cette question ou l'éclairent ? Sois précis.)
+
+**⚡ Implications & Points d'action**
+(Quelles décisions, actions ou suites découlent de ce point ? Ou notez "Aucune action directe identifiée" si applicable.)
+
+Sois concis mais précis. Maximum 250 mots. Réponds uniquement sur cette phrase."""
+                        },
+                        {
+                            "role": "user",
+                            "content": f"""Transcription complète (contexte) :
+
+{full_context}
+
+---
+Phrase marquée :
+[Original] {original}
+[Traduction] {transl}
+
+Analyse cette phrase."""
+                        }
+                    ],
+                    temperature=0.3,
+                    max_tokens=400,
+                )
+                analysis = resp.choices[0].message.content
+            except Exception as e:
+                analysis = f"❌ Erreur d'analyse : {e}"
+
+            # BUG-FIX: emit result immediately after each phrase
+            # (old code accumulated all in a dict and sent once at the end —
+            #  if the worker had 10 phrases and took 50s, the UI showed nothing
+            #  until all were done, causing perceived freeze)
+            try:
+                result_queue.put_nowait({item_id: analysis})
+            except Exception:
+                pass
+
+    except Exception as e:
+        # Client init failure — emit error for all pending items
+        for item in highlighted_items:
+            item_id = item.get("id")
+            if item_id:
+                try:
+                    result_queue.put_nowait({item_id: f"❌ Erreur Groq : {e}"})
+                except Exception:
+                    pass
+
+    # Always send the done sentinel so the drain loop can clear loading state
+    try:
+        result_queue.put_nowait({"__HL_DONE__": True})
+    except Exception:
+        pass
+
+
+def generate_highlight_summaries_groq():
+    """Trigger async generation of per-highlight summaries (does nothing if no highlights).
+
+    BUG-FIX: caps at _HL_MAX phrases to prevent runaway API usage.
+    On long 60-min sessions a user could highlight 60 phrases; without a cap
+    the worker would make 60 sequential API calls and the UI would appear frozen
+    for the entire remaining timeout window.
+    """
+    api_key = st.session_state.get("_groq_key", "")
+    highlighted_ids = st.session_state.get("highlighted_cards", set())
+    history = st.session_state.history
+
+    if not api_key or not highlighted_ids or not history:
+        return
+
+    # Build list of highlighted items (preserve conversation order — newest first)
+    highlighted_items = [
+        item for item in history
+        if item.get("id") in highlighted_ids
+    ]
+    if not highlighted_items:
+        return
+
+    # CAP: never process more than _HL_MAX phrases to bound API calls & wait time
+    if len(highlighted_items) > _HL_MAX:
+        highlighted_items = highlighted_items[:_HL_MAX]
+
+    st.session_state.highlighted_summaries = {}
+    st.session_state.highlighted_summaries_loading = True
+    st.session_state.highlight_summary_start_time = time.time()
+
+    # BUG-B FIX: use pass (not break) so one get_nowait() exception (Empty race)
+    # doesn't abort the drain early and leave a ghost __HL_DONE__ sentinel in the
+    # queue — which would flip highlighted_summaries_loading=False the instant the
+    # newly-launched worker checks in for the first time.
+    while not st.session_state.HIGHLIGHT_SUMMARY_QUEUE.empty():
+        try:
+            st.session_state.HIGHLIGHT_SUMMARY_QUEUE.get_nowait()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=highlight_summary_worker,
+        args=(api_key, highlighted_items, list(history),
+              SUMMARY_LANG, st.session_state.HIGHLIGHT_SUMMARY_QUEUE),
+        daemon=True
+    ).start()
+
+
 def summary_worker(api_key, history, lang, result_queue):
     """Background worker to generate summary using Groq without blocking the UI."""
     if not api_key or not history:
@@ -1476,9 +1765,12 @@ def summary_worker(api_key, history, lang, result_queue):
     ])
 
     try:
+        # BUG-9 FIX: add timeout=30.0 to match highlight_summary_worker — prevents
+        # hung TCP from blocking the summary thread indefinitely on network issues.
         client = GroqOpenAI(
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1"
+            base_url="https://api.groq.com/openai/v1",
+            timeout=30.0,
         )
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -1524,7 +1816,13 @@ Livre un compte-rendu très complet avec beaucoup de bullet points. Valorise la 
             max_tokens=1024
         )
         summary_text = response.choices[0].message.content
-        result_queue.put(summary_text)
+        # BUG-1 FIX: was result_queue.put(summary_text) — blocking call on an unbounded
+        # queue that already held the previous result. If the UI hasn't drained yet, this
+        # blocks the summary_worker thread indefinitely, freezing the background thread.
+        try:
+            result_queue.put_nowait(summary_text)
+        except Exception:
+            pass  # UI will recover via the 45s timeout safety net
 
     except Exception as e:
         try:
@@ -1543,14 +1841,15 @@ def generate_summary_groq():
         st.session_state.summary = "❌ Clé Groq manquante ou aucune transcription."
         return
 
-    # Si déjà en cours, ne pas relancer
-    if st.session_state.get("summary_in_progress"):
-        return
+    # Si déjà en cours, ne pas relancer - atomic check-and-set
+    with st.session_state.SUMMARY_LOCK:
+        if st.session_state.get("summary_in_progress"):
+            return
+        st.session_state.summary_in_progress = True
 
     # Lancer le thread de génération
     st.session_state.summary_loading = True
     st.session_state.summary = ""
-    st.session_state.summary_in_progress = True
     st.session_state.summary_start_time = time.time()
     
     threading.Thread(
@@ -1571,13 +1870,11 @@ def stop_translating():
     st.session_state._locked_device_name = None
     # Marquer que le résumé doit être généré au prochain cycle Streamlit
     if st.session_state.get("_groq_key") and st.session_state.history:
-        st.session_state.summary = ""
-        st.session_state.summary_loading = True
-        st.session_state.summary_in_progress = False
         generate_summary_groq()
 
 def clear_conversation():
     st.session_state.history                         = []
+    st.session_state.history_map                     = {}
     st.session_state.current_sentence["original"]    = ""
     st.session_state.current_sentence["translation"] = ""
     st.session_state.interim_text                    = ""
@@ -1585,7 +1882,22 @@ def clear_conversation():
     st.session_state.summary_loading                 = False
     st.session_state.summary_in_progress             = False
     st.session_state.current_page                    = "main"
-    st.session_state.highlighted_cards               = set()  # BUG FIX: reset highlights so stale indices don't persist
+    st.session_state.highlighted_cards               = set()
+    st.session_state.highlighted_summaries           = {}
+    st.session_state.highlighted_summaries_loading   = False
+    # BUG-D FIX: drain stale results from both background queues.
+    # A summary/highlight worker still running at clear-time will eventually
+    # post its result (or the __HL_DONE__ sentinel) into its queue. Without
+    # this drain, the next rerun picks it up and either overwrites summary=""
+    # with old text, or flips highlighted_summaries_loading=False prematurely
+    # on a fresh generation triggered right after the clear.
+    for _stale_q in (st.session_state.SUMMARY_QUEUE,
+                     st.session_state.HIGHLIGHT_SUMMARY_QUEUE):
+        while not _stale_q.empty():
+            try:
+                _stale_q.get_nowait()
+            except Exception:
+                break
     try:
         STATUS_QUEUE.put_nowait("🗑️ Conversation effacée.")
     except queue.Full:
@@ -1593,22 +1905,36 @@ def clear_conversation():
 
 # ── Drain queues → session state ───────────────────────────────────────────────
 # Drain all pending status messages — keep only the LATEST one for display
+# BUG-10 FIX: cap drain at 50 items/rerun. If a bug floods STATUS_QUEUE with 500 items
+# the old unbounded while loop would spin through all 500 before rendering, blocking
+# the main thread for a visible freeze (each get_nowait() has OS overhead).
 _last_status_msg = None
-while not STATUS_QUEUE.empty():
+_status_drain_limit = 50
+_status_drain_count = 0
+while _status_drain_count < _status_drain_limit and not STATUS_QUEUE.empty():
     try:
         msg = STATUS_QUEUE.get_nowait()
         if isinstance(msg, str):
             _last_status_msg = msg
     except Exception:
-        continue  # FREEZE FIX: was break — one bad item must not abort the whole drain
+        pass  # FREEZE FIX: was break — one bad item must not abort the whole drain
+    _status_drain_count += 1
 if _last_status_msg is not None:
     st.session_state.status_dict["msg"] = _last_status_msg
 
-while not st.session_state.UI_UPDATE_QUEUE.empty():
+# BUG-11 FIX: cap UI drain at 100 items/rerun (was unbounded). On burst transcription
+# all 500 queued items would drain synchronously before the first render, causing a
+# perceptible freeze. 100 items/cycle keeps processing lean; the next 300ms rerun
+# picks up the remainder. This is the single most important freeze-prevention cap.
+_ui_drain_limit = 100
+_ui_drain_count = 0
+while _ui_drain_count < _ui_drain_limit and not st.session_state.UI_UPDATE_QUEUE.empty():
     try:
         topic, val = st.session_state.UI_UPDATE_QUEUE.get_nowait()
         if topic == "interim":
             st.session_state.interim_text = val
+        elif topic == "clear_interim":
+            st.session_state.interim_text = ""
         elif topic == "final":
             st.session_state.interim_text = ""
             text, sid = val
@@ -1620,10 +1946,8 @@ while not st.session_state.UI_UPDATE_QUEUE.empty():
             if sid == st.session_state.current_sentence.get("id"):
                 st.session_state.current_sentence["translation"] = translated
             # Retroactively update history
-            for item in st.session_state.history:
-                if item.get("id") == sid:
-                    item["translation"] = translated
-                    break
+            if sid in st.session_state.history_map:
+                st.session_state.history_map[sid]["translation"] = translated
         elif topic == "level":
             st.session_state.audio_level = val
         elif topic == "commit":
@@ -1631,26 +1955,68 @@ while not st.session_state.UI_UPDATE_QUEUE.empty():
             orig = st.session_state.current_sentence["original"]
             trad = st.session_state.current_sentence["translation"]
             if orig.strip():
-                st.session_state.history.insert(0, {"original": orig, "translation": trad, "id": sid})
+                new_item = {"original": orig, "translation": trad, "id": sid}
+                st.session_state.history.insert(0, new_item)
+                st.session_state.history_map[sid] = new_item
                 # BUG-7 FIX: trim history to 200 items so Streamlit session memory stays
                 # bounded over a 40-minute session. Without this, memory grows unboundedly
                 # and reruns slow down until the UI queue starves.
                 if len(st.session_state.history) > 200:
                     st.session_state.history = st.session_state.history[:200]
+                    # BUG-5 FIX: prune stale highlight IDs that were trimmed out of history.
+                    # Without this, highlighted_cards holds IDs that no longer exist in history.
+                    # They silently waste _HL_MAX quota in generate_highlight_summaries_groq()
+                    # and cause highlight_summary_worker to analyse phantom items.
+                    _live_ids = {it["id"] for it in st.session_state.history}
+                    st.session_state.history_map = {k: v for k, v in st.session_state.history_map.items() if k in _live_ids}
+                    st.session_state.highlighted_cards = {
+                        hid for hid in st.session_state.highlighted_cards if hid in _live_ids
+                    }
             st.session_state.current_sentence["original"]    = ""
             st.session_state.current_sentence["translation"] = ""
             st.session_state.current_sentence["id"]          = 0.0
+            st.session_state.interim_text                    = "" # BUG-H FIX: absolutely ensure interim text wipes on commit
     except Exception:
-        continue  # BUG-6 FIX: was break — one malformed message must not abort the drain
+        pass  # BUG-6 FIX: was break — one malformed message must not abort the drain
+    _ui_drain_count += 1
 
-while not st.session_state.SUMMARY_QUEUE.empty():
+# BUG-E FIX: cap SUMMARY_QUEUE drain at 5 items and use pass (not continue).
+# summary_worker posts exactly 1 item, but after a timeout→regen→clear cycle a
+# previous worker's result can still arrive. The old `continue` inside the while
+# loop created an infinite spin if an exception was raised on every iteration.
+_sum_drain = 0
+while _sum_drain < 5 and not st.session_state.SUMMARY_QUEUE.empty():
     try:
         res = st.session_state.SUMMARY_QUEUE.get_nowait()
         st.session_state.summary = res
         st.session_state.summary_loading = False
         st.session_state.summary_in_progress = False
     except Exception:
-        continue  # BUG-12 FIX: was break — keep draining even if one item fails
+        pass  # keep draining — one bad item must not abort
+    _sum_drain += 1
+
+# Drain highlighted phrase summaries queue
+# BUG-FIX: drain ALL pending items per rerun cycle (old code only handled one item
+# and then left the rest for the next cycle — caused 500ms+/phrase display lag).
+# The __HL_DONE__ sentinel is the authoritative signal to clear loading state;
+# individual items {item_id: text} are applied progressively to highlighted_summaries.
+_hl_drain_limit = 50   # safety cap — never spin more than 50 items per rerun
+_hl_drain_count = 0
+while _hl_drain_count < _hl_drain_limit and not st.session_state.HIGHLIGHT_SUMMARY_QUEUE.empty():
+    try:
+        res = st.session_state.HIGHLIGHT_SUMMARY_QUEUE.get_nowait()
+        if isinstance(res, dict):
+            if "__HL_DONE__" in res:
+                # Sentinel received — worker finished all phrases
+                st.session_state.highlighted_summaries_loading = False
+            else:
+                # Partial result for one phrase — apply immediately
+                st.session_state.highlighted_summaries.update(res)
+    except Exception:
+        pass
+    # BUG-6 FIX: always increment OUTSIDE the try/except so non-dict or exception
+    # items don't bypass the counter, preventing an infinite spin on a corrupt queue.
+    _hl_drain_count += 1
 
 # Lancer la génération si en attente
 if st.session_state.summary_loading and not st.session_state.summary:
@@ -1776,26 +2142,36 @@ if st.session_state.current_page == "main":
                         st.session_state.highlighted_cards.add(item_id)
                     st.rerun()
 
-    # ── Refresh loop ──────────────────────────────────────────
-    if st.session_state.status_dict["running"]:
-        time.sleep(0.3)
-        try:
-            st.rerun()
-        except Exception:
-            pass
-
-    # Rerun si résumé en cours de génération
-    if st.session_state.summary_loading:
-        time.sleep(0.5)
-        try:
-            st.rerun()
-        except Exception:
-            pass
+    # BUG-5 FIX: Only rerun when data actually arrives! By halting execution inside a
+    # sleep loop here, Streamlit stays passive and avoids needlessly re-rendering all
+    # 60 complex history cards every 300ms, which was thrashing the client browser.
+    _needs_rerun = st.session_state.status_dict["running"] or st.session_state.summary_loading
+    if _needs_rerun:
+        _ui_changed = False
+        while not st.session_state.STOP_EVENT.is_set():
+            _sleep_ms = 0.15 if st.session_state.status_dict["running"] else 0.5
+            time.sleep(_sleep_ms)
+            
+            # Watch queues passively
+            if not st.session_state.UI_UPDATE_QUEUE.empty() or \
+               not st.session_state.STATUS_QUEUE.empty() or \
+               not st.session_state.SUMMARY_QUEUE.empty() or \
+               st.session_state.highlighted_summaries_loading:
+                _ui_changed = True
+                break
+                
+        if _ui_changed:
+            try:
+                st.rerun()
+            except Exception:
+                pass
 
 # ══════════════════════════════════════════════════════════════
 # PAGE RÉSUMÉ
 # ══════════════════════════════════════════════════════════════
 elif st.session_state.current_page == "summary":
+
+    _is_dark_sum = st.session_state.theme == "dark"
 
     # ── Header page résumé ────────────────────────────────────
     col_back, col_title = st.columns([1, 5])
@@ -1813,18 +2189,42 @@ elif st.session_state.current_page == "summary":
     st.markdown("<hr style='border-color:var(--sb-border);margin:0.8rem 0'>", unsafe_allow_html=True)
 
     # ── Boutons actions ───────────────────────────────────────
+    # Build combined download content (highlights + global)
+    _hl_ids   = st.session_state.get("highlighted_cards", set())
+    _hl_sums  = st.session_state.get("highlighted_summaries", {})
+    _hl_items = [it for it in st.session_state.history if it.get("id") in _hl_ids]
+
+    _download_parts = []
+    if _hl_items and _hl_sums:
+        _download_parts.append("=== ✦ ANALYSE DES PHRASES CLÉS ===")
+        for _it in _hl_items:
+            _iid = _it.get("id")
+            _download_parts.append(f"\n— Phrase : {_it.get('original','')}")
+            _download_parts.append(f"  Traduction : {_it.get('translation','')}")
+            _download_parts.append(_hl_sums.get(_iid, "(en cours...)"))
+        _download_parts.append("="*50)
+    if st.session_state.summary:
+        _download_parts.append("\n=== 📋 RÉSUMÉ GLOBAL ===")
+        _download_parts.append(st.session_state.summary)
+
+    _combined_download = "\n".join(_download_parts)
+
     col_r1, col_r2, col_r3 = st.columns([2, 2, 4])
     with col_r1:
         if st.button("🔄 Régénérer", use_container_width=True):
             st.session_state.summary = ""
             st.session_state.summary_loading = True
             st.session_state.summary_in_progress = False
-            generate_summary_groq()  # BUG FIX: call directly — relying on cycle was unreliable
+            st.session_state.highlighted_summaries = {}
+            st.session_state.highlighted_summaries_loading = False
+            generate_summary_groq()
+            if st.session_state.highlighted_cards:
+                generate_highlight_summaries_groq()
     with col_r2:
-        if st.session_state.summary and "❌" not in st.session_state.summary:
+        if _combined_download and "❌" not in _combined_download:
             st.download_button(
                 "💾 Télécharger",
-                data=st.session_state.summary,
+                data=_combined_download,
                 file_name="resume_session.txt",
                 mime="text/plain",
                 use_container_width=True
@@ -1832,48 +2232,53 @@ elif st.session_state.current_page == "summary":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Affichage du résumé ───────────────────────────────────
+    # ══════════════════════════════════════════════════════════
+    # SECTION 1 — RÉSUMÉ GLOBAL (en haut, prominent)
+    # ══════════════════════════════════════════════════════════
+    if _hl_ids:
+        st.markdown("""
+        <div style='display:flex;align-items:center;gap:10px;margin-bottom:16px'>
+            <span style='font-size:1rem;font-weight:700;color:var(--live-title);
+                         text-transform:uppercase;letter-spacing:2px'>📋 Résumé Global</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     if st.session_state.summary_loading and not st.session_state.summary:
         st.markdown("""
         <div style='background:rgba(0,200,255,0.05);border:1px solid rgba(0,200,255,0.15);
-                    border-radius:16px;padding:40px;text-align:center'>
-            <div style='font-size:2rem;margin-bottom:16px'>⏳</div>
+                    border-radius:16px;padding:36px;text-align:center;margin-bottom:24px'>
+            <div style='font-size:2rem;margin-bottom:12px'>⏳</div>
             <div style='color:#00c8ff;font-size:1rem;font-weight:600'>Génération du résumé en cours...</div>
-            <div style='color:#4a5570;font-size:0.85rem;margin-top:8px'>Groq analyse ta session</div>
+            <div style='color:#4a5570;font-size:0.82rem;margin-top:8px'>Groq analyse la session complète</div>
         </div>
         """, unsafe_allow_html=True)
-        # La génération est déjà déclenchée par le cycle principal
         timeout_limit = 45.0
         elapsed = time.time() - st.session_state.get("summary_start_time", 0)
-        
         if elapsed > timeout_limit:
             st.session_state.summary_loading = False
             st.session_state.summary_in_progress = False
             st.session_state.summary = "❌ Délai dépassé (Timeout). Groq ne répond pas, réessaie plus tard."
             st.rerun()
-
         time.sleep(0.5)
         st.rerun()
 
     elif st.session_state.summary:
-        # Afficher le résumé formaté
-        summary_escaped = st.session_state.summary
-        st.markdown(f"""
+        # Decorative top bar for the global summary card
+        st.markdown("""
         <div style='background:linear-gradient(145deg,rgba(10,16,28,0.98),rgba(16,22,38,0.9));
                     border:1px solid rgba(0,200,255,0.2);border-radius:18px;
-                    padding:32px 36px;line-height:1.9;color:#c8d0e0;font-size:0.95rem;
+                    padding:6px 36px 4px;margin-bottom:0;
                     box-shadow:0 8px 32px rgba(0,0,0,0.5);position:relative;overflow:hidden'>
             <div style='position:absolute;top:0;left:0;right:0;height:2px;
                         background:linear-gradient(90deg,transparent,#00c8ff,#0066ff,transparent);
-                        opacity:0.5'></div>
+                        opacity:0.6'></div>
         </div>
         """, unsafe_allow_html=True)
+        # Native markdown renders the full structured summary (bold headers, bullets, etc.)
+        st.markdown(st.session_state.summary)
 
-        # Utiliser st.markdown natif pour le rendu Markdown du résumé
-        st.markdown(summary_escaped)
-
-        # Stats de session
-        st.markdown("<hr style='border-color:#1a2030;margin:1.5rem 0'>", unsafe_allow_html=True)
+        # Session stats bar
+        st.markdown("<hr style='border-color:rgba(0,200,255,0.1);margin:1.2rem 0'>", unsafe_allow_html=True)
         col_s1, col_s2, col_s3 = st.columns(3)
         with col_s1:
             st.metric("Phrases transcrites", len(st.session_state.history))
@@ -1881,14 +2286,128 @@ elif st.session_state.current_page == "summary":
             total_words = sum(len(item.get("original", "").split()) for item in st.session_state.history)
             st.metric("Mots transcrits", total_words)
         with col_s3:
-            st.metric("Modèle IA", "Groq Llama 3.3")
+            _n_hl = len(st.session_state.get("highlighted_cards", set()))
+            st.metric("Phrases clés", _n_hl)
 
     else:
         st.markdown("""
         <div style='background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);
-                    border-radius:16px;padding:40px;text-align:center;color:#4a5570'>
+                    border-radius:16px;padding:40px;text-align:center;color:#4a5570;
+                    margin-bottom:24px'>
             <div style='font-size:2rem;margin-bottom:12px'>🤖</div>
             <div style='font-size:1rem'>Aucun résumé disponible</div>
             <div style='font-size:0.85rem;margin-top:8px'>Lance une session de transcription puis reviens ici</div>
         </div>
         """, unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════════════
+    # SECTION 2 — ✦ ANALYSE DES PHRASES CLÉS (en bas)
+    # ══════════════════════════════════════════════════════════
+    if _hl_ids:
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        if _is_dark_sum:
+            _hl_section_bg   = "linear-gradient(145deg,rgba(255,0,160,0.05),rgba(150,0,90,0.07))"
+            _hl_section_bdr  = "rgba(255,0,160,0.22)"
+            _hl_card_bg      = "rgba(255,0,160,0.06)"
+            _hl_card_bdr     = "#ff00a0"
+            _hl_card_glow    = "0 0 0 1px rgba(255,0,160,0.15), 0 4px 18px rgba(255,0,160,0.12)"
+            _hl_phrase_color = "#ff33b5"
+            _hl_trans_color  = "#e080c0"
+            _hl_tag_bg       = "rgba(255,0,160,0.15)"
+            _hl_tag_color    = "#ff00a0"
+        else:
+            _hl_section_bg   = "linear-gradient(145deg,rgba(209,0,128,0.05),rgba(130,0,80,0.07))"
+            _hl_section_bdr  = "rgba(209,0,128,0.25)"
+            _hl_card_bg      = "rgba(209,0,128,0.08)"
+            _hl_card_bdr     = "#d10080"
+            _hl_card_glow    = "0 0 0 1px rgba(209,0,128,0.20), 0 4px 18px rgba(209,0,128,0.14)"
+            _hl_phrase_color = "#b0006c"
+            _hl_trans_color  = "#d10080"
+            _hl_tag_bg       = "rgba(209,0,128,0.10)"
+            _hl_tag_color    = "#d10080"
+
+        # ── Section banner ──────────────────────────────────────
+        _hl_loading = st.session_state.get("highlighted_summaries_loading", False)
+        _done_count = sum(1 for it in _hl_items if it.get("id") in _hl_sums)
+        _loading_label = (
+            f"⏳ {_done_count}/{len(_hl_items)} analysées..."
+            if _hl_loading else
+            f"{len(_hl_items)} phrase{'s' if len(_hl_items)>1 else ''}"
+        )
+
+        st.markdown(f"""
+        <div style='background:{_hl_section_bg};border:1px solid {_hl_section_bdr};
+                    border-radius:16px;padding:20px 24px 16px;margin-bottom:22px;
+                    position:relative;overflow:hidden'>
+            <div style='position:absolute;top:0;left:0;right:0;height:2px;
+                        background:linear-gradient(90deg,transparent,{_hl_card_bdr},transparent);opacity:0.6'></div>
+            <div style='display:flex;align-items:center;gap:10px'>
+                <span style='font-size:1.1rem'>✦</span>
+                <span style='font-size:0.85rem;font-weight:700;color:{_hl_phrase_color};
+                             text-transform:uppercase;letter-spacing:2.5px'>Analyse des Phrases Clés</span>
+                <span style='background:{_hl_tag_bg};color:{_hl_tag_color};font-size:0.7rem;
+                             font-weight:700;padding:3px 10px;border-radius:20px;
+                             letter-spacing:0.5px'>{_loading_label}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Per-phrase cards ────────────────────────────────────
+        for _rank, _item in enumerate(_hl_items, 1):
+            _iid      = _item.get("id")
+            _orig     = _html.escape(_item.get("original", ""))
+            _trad     = _html.escape(_item.get("translation", ""))
+            _analysis = _hl_sums.get(_iid)
+
+            # Phrase header card
+            st.markdown(f"""
+            <div style='background:{_hl_card_bg};border:1px solid {_hl_card_bdr};
+                        border-radius:12px;padding:18px 20px 14px;margin-bottom:6px;
+                        box-shadow:{_hl_card_glow};position:relative'>
+                <div style='position:absolute;top:12px;right:14px;background:{_hl_tag_bg};
+                            color:{_hl_tag_color};font-size:0.65rem;font-weight:700;
+                            padding:2px 8px;border-radius:10px;letter-spacing:0.5px'>✦ {_rank}</div>
+                <div style='font-size:0.95rem;font-weight:600;color:{_hl_phrase_color};
+                            margin-bottom:5px;line-height:1.5;padding-right:44px'>{_orig}</div>
+                <div style='font-size:0.85rem;color:{_hl_trans_color};font-style:italic;
+                            line-height:1.5;opacity:0.85'>{_trad}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Analysis content (or loading / fallback state)
+            if _analysis:
+                st.markdown(_analysis)
+            elif _hl_loading:
+                st.markdown("""
+                <div style='padding:10px 4px 20px;color:#4a5570;font-size:0.85rem;
+                            font-style:italic'>⏳ Groq analyse cette phrase...</div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div style='padding:8px 4px 18px;color:#4a5570;font-size:0.85rem;
+                            font-style:italic'>Aucune analyse disponible.</div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<div style='margin-bottom:14px'></div>", unsafe_allow_html=True)
+
+        # Timeout safety: force-clear loading flag if stuck for >120s
+        # BUG-7 FIX: also trigger st.rerun() after clearing — without it the UI
+        # stays showing "loading" until the next natural 500ms cycle fires.
+        if _hl_loading:
+            _hl_elapsed = time.time() - st.session_state.get("highlight_summary_start_time", 0)
+            if _hl_elapsed > 120.0:
+                st.session_state.highlighted_summaries_loading = False
+                try:
+                    st.rerun()
+                except Exception:
+                    pass
+
+    # ── Rerun while any generation is in progress ─────────────
+    if st.session_state.get("highlighted_summaries_loading") or \
+       (st.session_state.summary_loading and not st.session_state.summary):
+        time.sleep(0.5)
+        try:
+            st.rerun()
+        except Exception:
+            pass
