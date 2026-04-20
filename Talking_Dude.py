@@ -162,100 +162,110 @@ def toggle_theme():
 
 if st.session_state.theme == "dark":
     theme_vars = """
-        --bg-main: #080b10;
-        --text-main: #c8d0e0;
-        --header-bg: rgba(8, 11, 16, 0.95);
-        --live-bg-1: rgba(10,16,28,0.95);
-        --live-bg-2: rgba(16,22,38,0.85);
-        --live-border: rgba(0, 200, 255, 0.15);
-        --live-title: #00c8ff;
-        --live-glow: 0 0 10px #ff2255, 0 0 20px rgba(255,34,85,0.4);
-        --live-text: #f0f4ff;
-        --ghost-text: 0.35;
-        --trans-text: #00e5ff;
-        --hist-bg: rgba(255,255,255,0.025);
-        --hist-hover: rgba(255,255,255,0.04);
-        --hist-border: rgba(0, 200, 255, 0.35);
-        --hist-orig: #d0d8ee;
-        --hist-trans: #00b8d4;
-        --hist-hl-bg: rgba(0, 150, 255, 0.14);
-        --hist-hl-border: #00c8ff;
-        --hist-hl-glow: 0 0 0 2px rgba(0,200,255,0.18), 0 4px 20px rgba(0,150,255,0.18);
+        --bg-main: #0A0E17;
+        --text-main: #CBD5E1;
+        --header-bg: rgba(10, 14, 23, 0.92);
+        --live-bg-1: rgba(15,20,35,0.92);
+        --live-bg-2: rgba(20,28,50,0.82);
+        --live-border: rgba(99,102,241,0.18);
+        --live-title: #818CF8;
+        --live-glow: 0 0 12px #EF4444, 0 0 24px rgba(249,115,22,0.35);
+        --live-text: #F1F5F9;
+        --ghost-text: 0.32;
+        --trans-text: #A5B4FC;
+        --hist-bg: rgba(255,255,255,0.03);
+        --hist-hover: rgba(255,255,255,0.055);
+        --hist-border: rgba(99,102,241,0.30);
+        --hist-orig: #E2E8F0;
+        --hist-trans: #A5B4FC;
+        --hist-hl-bg: rgba(167,139,250,0.12);
+        --hist-hl-border: #A78BFA;
+        --hist-hl-glow: 0 0 0 2px rgba(167,139,250,0.20), 0 4px 20px rgba(139,92,246,0.18);
         --btn-bg: rgba(255,255,255,0.04);
         --btn-border: rgba(255,255,255,0.08);
-        --btn-hover: rgba(0, 200, 255, 0.12);
-        --btn-hover-border: rgba(0, 200, 255, 0.4);
+        --btn-hover: rgba(99,102,241,0.12);
+        --btn-hover-border: rgba(99,102,241,0.45);
         --btn-shadow: none;
-        --btn-primary-bg: linear-gradient(135deg, #00b359, #00d26a);
-        --btn-primary-border: #00d26a;
-        --btn-primary-hover: linear-gradient(135deg, #00994d, #00b359);
+        --btn-primary-bg: linear-gradient(135deg, #10B981, #34D399);
+        --btn-primary-border: #10B981;
+        --btn-primary-hover: linear-gradient(135deg, #059669, #10B981);
         --btn-primary-text: #ffffff;
-        --status-bg: rgba(255,255,255,0.04);
-        --sb-bg: rgba(8,11,16,0.98);
-        --sb-border: rgba(255,255,255,0.05);
-        --subtitle: #4a5570;
-        --wv-bg-grad: linear-gradient(180deg,rgba(0,200,255,0.04) 0%,rgba(0,40,80,0.12) 100%);
+        --status-bg: rgba(255,255,255,0.035);
+        --sb-bg: rgba(10,14,23,0.97);
+        --sb-border: rgba(255,255,255,0.06);
+        --subtitle: #64748B;
+        --wv-bg-grad: linear-gradient(180deg,rgba(99,102,241,0.05) 0%,rgba(49,46,129,0.12) 100%);
         --input-bg: rgba(255,255,255,0.05);
-        --input-border: rgba(255,255,255,0.1);
-        --input-text: #f0f4ff;
-        --label-text: #c8d0e0;
-        --toggle-icon: #00d26a;
+        --input-border: rgba(255,255,255,0.10);
+        --input-text: #F1F5F9;
+        --label-text: #CBD5E1;
+        --toggle-icon: #34D399;
+        --accent: #6366F1;
+        --accent-light: #818CF8;
+        --highlight: #A78BFA;
+        --highlight-light: #C4B5FD;
     """
 else:
     theme_vars = """
-        --bg-main: #f8fafc;
-        --text-main: #334155;
-        --header-bg: rgba(248, 250, 252, 0.95);
+        --bg-main: #F8FAFC;
+        --text-main: #1E293B;
+        --header-bg: rgba(248, 250, 252, 0.92);
         --live-bg-1: rgba(255,255,255,0.95);
-        --live-bg-2: rgba(241,245,249,0.85);
-        --live-border: rgba(2, 132, 199, 0.15);
-        --live-title: #0284c7;
-        --live-glow: 0 0 10px #ef4444, 0 0 20px rgba(239,68,68,0.4);
-        --live-text: #0f172a;
-        --ghost-text: 0.45;
-        --trans-text: #007fb1;
-        --hist-bg: rgba(255,255,255,1);
+        --live-bg-2: rgba(241,245,249,0.88);
+        --live-border: rgba(99,102,241,0.15);
+        --live-title: #4F46E5;
+        --live-glow: 0 0 10px #EF4444, 0 0 20px rgba(239,68,68,0.35);
+        --live-text: #0F172A;
+        --ghost-text: 0.40;
+        --trans-text: #4338CA;
+        --hist-bg: rgba(255,255,255,0.95);
         --hist-hover: rgba(241,245,249,1);
-        --hist-border: rgba(2, 132, 199, 0.35);
-        --hist-orig: #1e293b;
-        --hist-trans: #006080;
-        --hist-hl-bg: rgba(2, 132, 199, 0.10);
-        --hist-hl-border: #0284c7;
-        --hist-hl-glow: 0 0 0 2px rgba(2,132,199,0.15), 0 4px 18px rgba(2,132,199,0.12);
+        --hist-border: rgba(99,102,241,0.30);
+        --hist-orig: #1E293B;
+        --hist-trans: #4338CA;
+        --hist-hl-bg: rgba(139,92,246,0.08);
+        --hist-hl-border: #7C3AED;
+        --hist-hl-glow: 0 0 0 2px rgba(139,92,246,0.18), 0 4px 18px rgba(124,58,237,0.14);
         --btn-bg: #ffffff;
-        --btn-border: #94a3b8;
-        --btn-hover: rgba(2, 132, 199, 0.08);
-        --btn-hover-border: rgba(2, 132, 199, 0.6);
-        --btn-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-        --btn-primary-bg: linear-gradient(135deg, #10b981, #34d399);
-        --btn-primary-border: #10b981;
-        --btn-primary-hover: linear-gradient(135deg, #059669, #10b981);
+        --btn-border: #CBD5E1;
+        --btn-hover: rgba(99,102,241,0.08);
+        --btn-hover-border: rgba(99,102,241,0.50);
+        --btn-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+        --btn-primary-bg: linear-gradient(135deg, #10B981, #34D399);
+        --btn-primary-border: #10B981;
+        --btn-primary-hover: linear-gradient(135deg, #059669, #10B981);
         --btn-primary-text: #ffffff;
         --status-bg: rgba(241,245,249,1);
-        --sb-bg: rgba(248,250,252,0.98);
-        --sb-border: rgba(0,0,0,0.05);
-        --subtitle: #64748b;
-        --wv-bg-grad: linear-gradient(180deg,rgba(2,132,199,0.04) 0%,rgba(2,132,199,0.12) 100%);
+        --sb-bg: rgba(248,250,252,0.97);
+        --sb-border: rgba(0,0,0,0.06);
+        --subtitle: #64748B;
+        --wv-bg-grad: linear-gradient(180deg,rgba(99,102,241,0.04) 0%,rgba(99,102,241,0.10) 100%);
         --input-bg: #ffffff;
-        --input-border: #cbd5e1;
-        --input-text: #0f172a;
+        --input-border: #CBD5E1;
+        --input-text: #0F172A;
         --label-text: #334155;
-        --toggle-icon: #000000;
+        --toggle-icon: #0F172A;
+        --accent: #4F46E5;
+        --accent-light: #6366F1;
+        --highlight: #7C3AED;
+        --highlight-light: #8B5CF6;
     """
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
     :root {{
         {theme_vars}
+        --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+        --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
     }}
 
     html, body, [data-testid="stAppViewContainer"] {{
         background-color: var(--bg-main);
         color: var(--text-main);
-        font-family: 'Space Grotesk', sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }}
 
     [data-testid="stMainBlockContainer"] {{
@@ -267,21 +277,23 @@ st.markdown(f"""
 
     .stAppHeader {{
         background-color: var(--header-bg) !important;
-        backdrop-filter: blur(12px);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
         border-bottom: 1px solid var(--live-border);
     }}
 
     /* ── Live Box ── */
     .live-box {{
         background: linear-gradient(145deg, var(--live-bg-1) 0%, var(--live-bg-2) 100%);
-        backdrop-filter: blur(24px);
-        border-radius: 18px;
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-radius: 16px;
         padding: 28px 32px;
         border: 1px solid var(--live-border);
         box-shadow:
-            0 8px 32px rgba(0,0,0,0.1),
+            0 8px 32px rgba(0,0,0,0.12),
             0 0 0 1px rgba(255,255,255,0.03),
-            inset 0 1px 0 rgba(255,255,255,0.05);
+            inset 0 1px 0 rgba(255,255,255,0.04);
         margin-bottom: 24px;
         position: relative;
         overflow: hidden;
@@ -292,15 +304,16 @@ st.markdown(f"""
         top: 0; left: 0; right: 0;
         height: 2px;
         background: linear-gradient(90deg, transparent, var(--live-title), transparent);
-        opacity: 0.6;
+        opacity: 0.5;
     }}
 
     .live-title {{
         color: var(--live-title);
-        font-weight: 700;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 600;
         text-transform: uppercase;
-        font-size: 0.7rem;
-        letter-spacing: 3px;
+        font-size: 0.68rem;
+        letter-spacing: 3.5px;
         margin-bottom: 18px;
         display: flex;
         align-items: center;
@@ -309,21 +322,22 @@ st.markdown(f"""
     .live-dot {{
         width: 7px;
         height: 7px;
-        background: #ff2255;
+        background: #EF4444;
         border-radius: 50%;
         box-shadow: var(--live-glow);
-        animation: pulse 1.8s ease-in-out infinite;
+        animation: td-pulse 2s ease-in-out infinite;
         display: inline-block;
     }}
-    @keyframes pulse {{
+    @keyframes td-pulse {{
         0%, 100% {{ transform: scale(1); opacity: 1; }}
-        50% {{ transform: scale(1.4); opacity: 0.4; }}
+        50% {{ transform: scale(1.35); opacity: 0.45; }}
     }}
 
     .live-text {{
-        font-size: 1.55rem;
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.5rem;
         font-weight: 600;
-        line-height: 1.5;
+        line-height: 1.6;
         color: var(--live-text);
         min-height: 2.5rem;
         letter-spacing: -0.01em;
@@ -335,28 +349,41 @@ st.markdown(f"""
     }}
 
     .translation-text {{
-        font-size: 1.5rem;
+        font-family: 'Inter', sans-serif;
+        font-size: 1.4rem;
         font-weight: 500;
         color: var(--trans-text);
         margin-top: 18px;
         padding-top: 18px;
         border-top: 1px solid var(--sb-border);
         font-style: italic;
-        line-height: 1.5;
-        letter-spacing: 0.02em;
+        line-height: 1.6;
+        letter-spacing: 0.01em;
     }}
 
     /* ── History Cards ── */
     .history-card {{
         background: var(--hist-bg);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
         border-radius: 12px;
         padding: 16px 20px;
-        margin-bottom: 14px;
+        margin-bottom: 12px;
         border-left: 3px solid var(--hist-border);
-        transition: all 0.22s cubic-bezier(0.4,0,0.2,1);
+        transition: transform 200ms var(--ease-out-strong),
+                    background 200ms ease,
+                    border-color 200ms ease,
+                    box-shadow 200ms ease;
         position: relative;
         cursor: pointer;
         user-select: none;
+        opacity: 0;
+        animation: td-card-in 350ms var(--ease-out-strong) forwards;
+        animation-delay: var(--stagger, 0ms);
+    }}
+    @keyframes td-card-in {{
+        from {{ opacity: 0; transform: translateY(8px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
     }}
     .history-card:hover {{
         background: var(--hist-hover);
@@ -374,28 +401,32 @@ st.markdown(f"""
         font-weight: 600;
     }}
     .history-card.highlighted::after {{
-        content: "✦";
+        content: "";
         position: absolute;
         right: 14px;
         top: 50%;
         transform: translateY(-50%);
-        color: var(--hist-hl-border);
-        font-size: 0.75rem;
+        width: 8px; height: 8px;
+        background: var(--hist-hl-border);
+        border-radius: 2px;
+        transform: translateY(-50%) rotate(45deg);
         opacity: 0.7;
     }}
     .history-original {{
-        font-size: 1rem;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.95rem;
         color: var(--hist-orig);
         margin-bottom: 6px;
-        line-height: 1.5;
-        transition: color 0.22s ease;
+        line-height: 1.55;
+        transition: color 200ms ease;
     }}
     .history-translation {{
-        font-size: 1.25rem;
+        font-family: 'Inter', sans-serif;
+        font-size: 1.15rem;
         color: var(--hist-trans);
         font-style: italic;
-        line-height: 1.5;
-        opacity: 0.95;
+        line-height: 1.55;
+        opacity: 0.92;
     }}
 
     /* ── Buttons ── */
@@ -406,32 +437,41 @@ st.markdown(f"""
         background: var(--btn-bg) !important;
         color: var(--text-main) !important;
         font-weight: 600;
-        font-family: 'Space Grotesk', sans-serif;
-        letter-spacing: 0.02em;
-        transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        font-family: 'Inter', sans-serif;
+        letter-spacing: 0.01em;
+        transition: transform 160ms var(--ease-out-strong),
+                    background 200ms ease,
+                    border-color 200ms ease,
+                    box-shadow 200ms ease;
         backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
         box-shadow: var(--btn-shadow);
+    }}
+    .stButton > button:active,
+    .stDownloadButton > button:active {{
+        transform: scale(0.97) !important;
     }}
     .stButton > button:disabled,
     .stDownloadButton > button:disabled {{
         background: var(--btn-bg) !important;
         border-color: var(--btn-border) !important;
         color: var(--text-main) !important;
-        opacity: 0.5;
+        opacity: 0.4;
         cursor: not-allowed;
     }}
     .stButton > button:hover,
-    .stDownloadButton > button:hover,
-    .stButton > button:active,
-    .stDownloadButton > button:active,
-    .stButton > button:focus,
-    .stDownloadButton > button:focus {{
+    .stDownloadButton > button:hover {{
         background: var(--btn-hover) !important;
         border-color: var(--btn-hover-border) !important;
         color: var(--live-title) !important;
-        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        transform: translateY(-1px);
         outline: none !important;
+    }}
+    .stButton > button:focus,
+    .stDownloadButton > button:focus {{
+        outline: 2px solid var(--live-title) !important;
+        outline-offset: 2px;
     }}
 
     /* ── Primary Button (Résumé) ── */
@@ -443,9 +483,12 @@ st.markdown(f"""
     }}
     .stButton button[kind="primary"]:hover, .stButton button[data-testid="baseButton-primary"]:hover {{
         background: var(--btn-primary-hover) !important;
-        box-shadow: 0 0 20px var(--btn-primary-border);
+        box-shadow: 0 4px 20px rgba(16,185,129,0.25);
         color: var(--btn-primary-text) !important;
-        transform: translateY(-2px);
+        transform: translateY(-1px);
+    }}
+    .stButton button[kind="primary"]:active, .stButton button[data-testid="baseButton-primary"]:active {{
+        transform: scale(0.97) !important;
     }}
     .stButton button[kind="primary"]:disabled, .stButton button[data-testid="baseButton-primary"]:disabled {{
         background: var(--btn-primary-bg) !important;
@@ -460,10 +503,10 @@ st.markdown(f"""
         background: var(--status-bg) !important;
         border-radius: 10px !important;
         font-family: 'JetBrains Mono', monospace;
-        font-size: 0.85rem !important;
+        font-size: 0.82rem !important;
     }}
-    .stSuccess {{ border-color: rgba(0,255,127,0.25) !important; }}
-    .stError   {{ border-color: rgba(255,34,85,0.25) !important; }}
+    .stSuccess {{ border-color: rgba(16,185,129,0.30) !important; }}
+    .stError   {{ border-color: rgba(239,68,68,0.30) !important; }}
 
     /* ── Sidebar ── */
     [data-testid="stSidebar"] {{
@@ -483,18 +526,33 @@ st.markdown(f"""
     /* ── Header ── */
     .app-header {{
         display: flex;
-        align-items: baseline;
-        gap: 14px;
+        align-items: center;
+        gap: 12px;
         margin-bottom: 6px;
     }}
+    .app-header-icon {{
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px; height: 36px;
+        background: linear-gradient(135deg, var(--accent, #6366F1), var(--highlight, #A78BFA));
+        border-radius: 10px;
+        flex-shrink: 0;
+    }}
+    .app-header-icon svg {{
+        width: 20px; height: 20px;
+        stroke: white; fill: none;
+        stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+    }}
     .app-title {{
-        font-size: 1.6rem;
+        font-family: 'Outfit', sans-serif;
+        font-size: 1.5rem;
         font-weight: 700;
         color: var(--live-text);
         letter-spacing: -0.03em;
     }}
     .app-subtitle {{
-        font-size: 0.85rem;
+        font-size: 0.82rem;
         color: var(--subtitle);
         font-family: 'JetBrains Mono', monospace;
     }}
@@ -506,6 +564,7 @@ st.markdown(f"""
         background-color: var(--input-bg) !important;
         border-color: var(--input-border) !important;
         color: var(--input-text) !important;
+        border-radius: 10px !important;
     }}
     
     [data-baseweb="select"] span,
@@ -523,33 +582,64 @@ st.markdown(f"""
     .stSelectbox label p,
     .stTextInput label p {{
         color: var(--label-text) !important;
+        font-family: 'Inter', sans-serif;
     }}
 
     [data-testid="stSidebar"] h1,
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3 {{
         color: var(--text-main) !important;
+        font-family: 'Outfit', sans-serif !important;
     }}
 
     div[data-testid="stSubheader"] {{
         color: var(--subtitle) !important;
-        font-size: 0.8rem !important;
+        font-family: 'Outfit', sans-serif;
+        font-size: 0.78rem !important;
         text-transform: uppercase;
-        letter-spacing: 2px;
+        letter-spacing: 2.5px;
         font-weight: 600;
         margin-top: 8px;
     }}
-/* Waveform Visualizer (Moved from inner function to avoid DOM reflows per frame) */
+
+    /* ── Metric cards ── */
+    [data-testid="stMetric"] {{
+        background: var(--hist-bg);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid var(--sb-border);
+        border-radius: 12px;
+        padding: 16px !important;
+    }}
+    [data-testid="stMetric"] label {{
+        font-family: 'Inter', sans-serif !important;
+        color: var(--subtitle) !important;
+    }}
+    [data-testid="stMetric"] [data-testid="stMetricValue"] {{
+        font-family: 'Outfit', sans-serif !important;
+        color: var(--live-text) !important;
+    }}
+
+    /* ── prefers-reduced-motion ── */
+    @media (prefers-reduced-motion: reduce) {{
+        .live-dot {{ animation: none; opacity: 1; }}
+        .history-card {{ animation: none; opacity: 1; }}
+        .history-card:hover {{ transform: none; }}
+        .stButton > button:hover {{ transform: none; }}
+        .stButton > button:active {{ transform: none !important; }}
+    }}
+
+/* Waveform Visualizer */
 .wv-wrap{{margin:10px 0 4px;padding:0;}}
-.wv-lbl{{font-size:0.62rem;color:#3d4d66;text-transform:uppercase;
-         letter-spacing:2px;margin-bottom:7px;font-family:'Space Grotesk',sans-serif;}}
+.wv-lbl{{font-size:0.60rem;color:var(--subtitle);text-transform:uppercase;
+         letter-spacing:2.5px;margin-bottom:7px;font-family:'Inter',sans-serif;font-weight:500;}}
 .wv{{display:flex;align-items:flex-end;gap:2px;height:46px;
      background:var(--wv-bg-grad);
-     border-radius:8px;padding:5px 6px;
-     border:1px solid rgba(0,200,255,0.10);box-sizing:border-box;}}
+     border-radius:10px;padding:5px 6px;
+     border:1px solid rgba(99,102,241,0.10);box-sizing:border-box;}}
 .wb{{flex:1;min-width:1px;border-radius:2px 2px 1px 1px;
-     background:linear-gradient(180deg,var(--c,#00c8ff) 0%,rgba(0,80,200,0.6) 100%);
-     box-shadow:0 0 5px rgba(0,200,255,0.20);
+     background:linear-gradient(180deg,var(--c,#818CF8) 0%,rgba(79,70,229,0.5) 100%);
+     box-shadow:0 0 4px rgba(99,102,241,0.18);
      transform-origin:bottom center;
      transition: height 0.08s ease;}}
 </style>
@@ -573,7 +663,10 @@ STOP_EVENT        = st.session_state.STOP_EVENT
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="app-header">
-    <span class="app-title">🎙️ Talking Dude</span>
+    <div class="app-header-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </div>
+    <span class="app-title">Talking Dude</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -656,8 +749,8 @@ def _audio_waveform_html(level: float) -> str:
         
         h = max(min_h, int(min_h + (max_h - min_h) * boosted_level * edge_factor * sine_factor))
         
-        bright = int(180 + 75 * edge_factor)
-        colour = f"rgb(0,{bright},255)"
+        bright = int(160 + 95 * edge_factor)
+        colour = f"rgb({int(bright*0.5)},{int(bright*0.55)},{bright})"
         
         bars.append(
             f'<span class="wb" style="height:{h}px;--c:{colour}"></span>'
@@ -679,7 +772,7 @@ theme_icon = "☀️ Mode Clair" if st.session_state.theme == "dark" else "🌙 
 col_thm.button(theme_icon, on_click=toggle_theme, use_container_width=True)
 st.sidebar.markdown("---")
 
-st.sidebar.header("🌍 Langues")
+st.sidebar.header("Langues")
 
 source_lang_map = {"en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE", "it": "it-IT", "pt": "pt-BR", "ar": "ar"}
 target_lang_map = {"fr": "fr", "en": "en", "es": "es", "de": "de", "it": "it", "pt": "pt", "ar": "ar"}
@@ -701,7 +794,7 @@ if source_display != _saved_src or target_display != _saved_tgt:
 
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎙️ Audio")
+st.sidebar.header("Audio")
 
 # BLACKHOLE LOCK — THREE WALLS:
 #   1. get_audio_devices() only returns BlackHole devices (mic never listed)
@@ -749,7 +842,7 @@ if st.session_state.status_dict["running"]:
 
 
 st.sidebar.markdown("---")
-st.sidebar.header("🤖 Résumé IA")
+st.sidebar.header("Résumé IA")
 
 if "_groq_key" not in st.session_state:
     st.session_state._groq_key = _persisted.get("groq_key", "")
@@ -809,7 +902,7 @@ def go_to_summary():
 
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔑 APIs")
+st.sidebar.header("APIs")
 
 if "_dg_key" not in st.session_state:
     saved_key = _persisted.get("dg_key", "")
@@ -2036,17 +2129,17 @@ if st.session_state.current_page == "main":
             _start_help = None if not _start_disabled else (
                 "Clé Deepgram requise" if not DG_API_KEY else "BlackHole introuvable — installe BlackHole 2ch"
             )
-            st.button("🟢 Démarrer", on_click=start_translating,
+            st.button("▶ Démarrer", on_click=start_translating,
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
-            st.button("🔴 Arrêter", on_click=stop_translating, use_container_width=True)
+            st.button("■ Arrêter", on_click=stop_translating, use_container_width=True)
     with col2:
-        st.button("🗑️ Effacer", on_click=clear_conversation, use_container_width=True)
+        st.button("Effacer", on_click=clear_conversation, use_container_width=True)
     with col3:
         summarize_disabled = not st.session_state.history or not GROQ_API_KEY
         st.button(
-            "📋 Résumé",
+            "Résumé",
             type="primary",
             on_click=go_to_summary,
             use_container_width=True,
@@ -2055,9 +2148,9 @@ if st.session_state.current_page == "main":
         )
     with col4:
         if st.session_state.status_dict["running"]:
-            st.markdown("<p style='color:#00ff7f;font-size:0.85rem;padding-top:8px'>● LIVE</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:#34D399;font-size:0.8rem;padding-top:8px;font-family:JetBrains Mono,monospace;font-weight:600;letter-spacing:1px'>● LIVE</p>", unsafe_allow_html=True)
         else:
-            st.markdown("<p style='color:#4a5570;font-size:0.85rem;padding-top:8px'>● Off</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:var(--subtitle);font-size:0.8rem;padding-top:8px;font-family:JetBrains Mono,monospace;letter-spacing:1px'>● Off</p>", unsafe_allow_html=True)
 
     if not DG_API_KEY:
         st.warning("👈 Entre ta clé Deepgram dans la barre latérale pour commencer.")
@@ -2103,15 +2196,15 @@ if st.session_state.current_page == "main":
     else:
         _is_dark = st.session_state.theme == "dark"
 
-        # Theme-aware highlight colors (inline styles — works on all devices)
+        # Theme-aware highlight colors — violet palette (inline styles — works on all devices)
         if _is_dark:
-            HL_CARD  = "background:rgba(0,210,100,0.13)!important;border-left:3px solid #00d26a!important;box-shadow:0 0 0 2px rgba(0,210,100,0.22),0 4px 22px rgba(0,210,100,0.18);transform:translateX(3px);"
-            HL_ORIG  = "color:#00d26a;font-weight:600;"
-            HL_COLOR = "#00d26a"
+            HL_CARD  = "background:rgba(167,139,250,0.12)!important;border-left:3px solid #A78BFA!important;box-shadow:0 0 0 2px rgba(167,139,250,0.20),0 4px 22px rgba(139,92,246,0.18);transform:translateX(3px);"
+            HL_ORIG  = "color:#C4B5FD;font-weight:600;"
+            HL_COLOR = "#A78BFA"
         else:
-            HL_CARD  = "background:rgba(16,185,129,0.22)!important;border-left:3px solid #047857!important;box-shadow:0 0 0 3px rgba(4,120,87,0.40),0 4px 22px rgba(16,185,129,0.30);transform:translateX(3px);"
-            HL_ORIG  = "color:#065f46;font-weight:600;"
-            HL_COLOR = "#047857"
+            HL_CARD  = "background:rgba(139,92,246,0.10)!important;border-left:3px solid #7C3AED!important;box-shadow:0 0 0 2px rgba(124,58,237,0.20),0 4px 22px rgba(139,92,246,0.16);transform:translateX(3px);"
+            HL_ORIG  = "color:#5B21B6;font-weight:600;"
+            HL_COLOR = "#7C3AED"
 
         for idx, item in enumerate(st.session_state.history[:60]):
             # BUG FIX: use the sentence's stable unique id for highlight tracking,
@@ -2123,12 +2216,15 @@ if st.session_state.current_page == "main":
 
             card_style = HL_CARD if is_hl else ""
             orig_style = HL_ORIG if is_hl else ""
-            sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:1.4rem;color:{HL_COLOR};line-height:1">✦</span>' if is_hl else ""
+            sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%) rotate(45deg);width:10px;height:10px;background:{HL_COLOR};border-radius:2px;opacity:0.7"></span>' if is_hl else ""
+
+            # Stagger delay: 40ms per card, capped at 400ms (10 cards visible stagger)
+            _stagger_ms = min(idx * 40, 400)
 
             col_card, col_btn = st.columns([11, 1])
             with col_card:
                 st.markdown(f"""
-                <div class="history-card" style="{card_style}position:relative;">
+                <div class="history-card" style="--stagger:{_stagger_ms}ms;{card_style}position:relative;">
                     <div class="history-original" style="{orig_style}">{s_orig}</div>
                     <div class="history-translation">{s_trans}</div>
                     {sparkle}
@@ -2182,7 +2278,7 @@ elif st.session_state.current_page == "summary":
     with col_title:
         st.markdown("""
         <div style='padding-top:6px'>
-            <span style='font-size:1.4rem;font-weight:700;color:var(--live-text)'>📋 Résumé de session</span>
+            <span style='font-family:Outfit,sans-serif;font-size:1.35rem;font-weight:700;color:var(--live-text)'>Résumé de session</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -2211,7 +2307,7 @@ elif st.session_state.current_page == "summary":
 
     col_r1, col_r2, col_r3 = st.columns([2, 2, 4])
     with col_r1:
-        if st.button("🔄 Régénérer", use_container_width=True):
+        if st.button("Régénérer", use_container_width=True):
             st.session_state.summary = ""
             st.session_state.summary_loading = True
             st.session_state.summary_in_progress = False
@@ -2223,7 +2319,7 @@ elif st.session_state.current_page == "summary":
     with col_r2:
         if _combined_download and "❌" not in _combined_download:
             st.download_button(
-                "💾 Télécharger",
+                "Télécharger",
                 data=_combined_download,
                 file_name="resume_session.txt",
                 mime="text/plain",
@@ -2238,19 +2334,22 @@ elif st.session_state.current_page == "summary":
     if _hl_ids:
         st.markdown("""
         <div style='display:flex;align-items:center;gap:10px;margin-bottom:16px'>
-            <span style='font-size:1rem;font-weight:700;color:var(--live-title);
-                         text-transform:uppercase;letter-spacing:2px'>📋 Résumé Global</span>
+            <span style='font-family:Outfit,sans-serif;font-size:0.9rem;font-weight:700;color:var(--live-title);
+                         text-transform:uppercase;letter-spacing:2.5px'>Résumé Global</span>
         </div>
         """, unsafe_allow_html=True)
 
     if st.session_state.summary_loading and not st.session_state.summary:
         st.markdown("""
-        <div style='background:rgba(0,200,255,0.05);border:1px solid rgba(0,200,255,0.15);
-                    border-radius:16px;padding:36px;text-align:center;margin-bottom:24px'>
-            <div style='font-size:2rem;margin-bottom:12px'>⏳</div>
-            <div style='color:#00c8ff;font-size:1rem;font-weight:600'>Génération du résumé en cours...</div>
-            <div style='color:#4a5570;font-size:0.82rem;margin-top:8px'>Groq analyse la session complète</div>
+        <div style='background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.18);
+                    border-radius:16px;padding:36px;text-align:center;margin-bottom:24px;
+                    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)'>
+            <div style='width:36px;height:36px;border:2px solid var(--live-title);border-top-color:transparent;
+                        border-radius:50%;animation:td-spin 0.8s linear infinite;margin:0 auto 14px'></div>
+            <div style='color:var(--live-title);font-family:Outfit,sans-serif;font-size:1rem;font-weight:600'>Génération du résumé en cours...</div>
+            <div style='color:var(--subtitle);font-size:0.82rem;margin-top:8px'>Groq analyse la session complète</div>
         </div>
+        <style>@keyframes td-spin { to { transform: rotate(360deg); } }</style>
         """, unsafe_allow_html=True)
         timeout_limit = 45.0
         elapsed = time.time() - st.session_state.get("summary_start_time", 0)
@@ -2265,20 +2364,21 @@ elif st.session_state.current_page == "summary":
     elif st.session_state.summary:
         # Decorative top bar for the global summary card
         st.markdown("""
-        <div style='background:linear-gradient(145deg,rgba(10,16,28,0.98),rgba(16,22,38,0.9));
-                    border:1px solid rgba(0,200,255,0.2);border-radius:18px;
+        <div style='background:linear-gradient(145deg,rgba(15,20,35,0.95),rgba(20,28,50,0.88));
+                    border:1px solid rgba(99,102,241,0.20);border-radius:16px;
                     padding:6px 36px 4px;margin-bottom:0;
-                    box-shadow:0 8px 32px rgba(0,0,0,0.5);position:relative;overflow:hidden'>
+                    backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+                    box-shadow:0 8px 32px rgba(0,0,0,0.3);position:relative;overflow:hidden'>
             <div style='position:absolute;top:0;left:0;right:0;height:2px;
-                        background:linear-gradient(90deg,transparent,#00c8ff,#0066ff,transparent);
-                        opacity:0.6'></div>
+                        background:linear-gradient(90deg,transparent,#818CF8,#6366F1,transparent);
+                        opacity:0.5'></div>
         </div>
         """, unsafe_allow_html=True)
         # Native markdown renders the full structured summary (bold headers, bullets, etc.)
         st.markdown(st.session_state.summary)
 
         # Session stats bar
-        st.markdown("<hr style='border-color:rgba(0,200,255,0.1);margin:1.2rem 0'>", unsafe_allow_html=True)
+        st.markdown("<hr style='border-color:rgba(99,102,241,0.10);margin:1.2rem 0'>", unsafe_allow_html=True)
         col_s1, col_s2, col_s3 = st.columns(3)
         with col_s1:
             st.metric("Phrases transcrites", len(st.session_state.history))
@@ -2292,10 +2392,13 @@ elif st.session_state.current_page == "summary":
     else:
         st.markdown("""
         <div style='background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);
-                    border-radius:16px;padding:40px;text-align:center;color:#4a5570;
-                    margin-bottom:24px'>
-            <div style='font-size:2rem;margin-bottom:12px'>🤖</div>
-            <div style='font-size:1rem'>Aucun résumé disponible</div>
+                    border-radius:16px;padding:40px;text-align:center;color:var(--subtitle);
+                    margin-bottom:24px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)'>
+            <div style='width:40px;height:40px;border-radius:10px;background:rgba(99,102,241,0.10);
+                        display:flex;align-items:center;justify-content:center;margin:0 auto 14px'>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--subtitle)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>
+            </div>
+            <div style='font-family:Outfit,sans-serif;font-size:1rem;font-weight:600'>Aucun résumé disponible</div>
             <div style='font-size:0.85rem;margin-top:8px'>Lance une session de transcription puis reviens ici</div>
         </div>
         """, unsafe_allow_html=True)
@@ -2307,25 +2410,25 @@ elif st.session_state.current_page == "summary":
         st.markdown("<br>", unsafe_allow_html=True)
 
         if _is_dark_sum:
-            _hl_section_bg   = "linear-gradient(145deg,rgba(255,0,160,0.05),rgba(150,0,90,0.07))"
-            _hl_section_bdr  = "rgba(255,0,160,0.22)"
-            _hl_card_bg      = "rgba(255,0,160,0.06)"
-            _hl_card_bdr     = "#ff00a0"
-            _hl_card_glow    = "0 0 0 1px rgba(255,0,160,0.15), 0 4px 18px rgba(255,0,160,0.12)"
-            _hl_phrase_color = "#ff33b5"
-            _hl_trans_color  = "#e080c0"
-            _hl_tag_bg       = "rgba(255,0,160,0.15)"
-            _hl_tag_color    = "#ff00a0"
+            _hl_section_bg   = "linear-gradient(145deg,rgba(139,92,246,0.06),rgba(88,28,135,0.08))"
+            _hl_section_bdr  = "rgba(139,92,246,0.22)"
+            _hl_card_bg      = "rgba(139,92,246,0.06)"
+            _hl_card_bdr     = "#A78BFA"
+            _hl_card_glow    = "0 0 0 1px rgba(139,92,246,0.15), 0 4px 18px rgba(139,92,246,0.12)"
+            _hl_phrase_color = "#C4B5FD"
+            _hl_trans_color  = "#A78BFA"
+            _hl_tag_bg       = "rgba(139,92,246,0.15)"
+            _hl_tag_color    = "#A78BFA"
         else:
-            _hl_section_bg   = "linear-gradient(145deg,rgba(209,0,128,0.05),rgba(130,0,80,0.07))"
-            _hl_section_bdr  = "rgba(209,0,128,0.25)"
-            _hl_card_bg      = "rgba(209,0,128,0.08)"
-            _hl_card_bdr     = "#d10080"
-            _hl_card_glow    = "0 0 0 1px rgba(209,0,128,0.20), 0 4px 18px rgba(209,0,128,0.14)"
-            _hl_phrase_color = "#b0006c"
-            _hl_trans_color  = "#d10080"
-            _hl_tag_bg       = "rgba(209,0,128,0.10)"
-            _hl_tag_color    = "#d10080"
+            _hl_section_bg   = "linear-gradient(145deg,rgba(124,58,237,0.05),rgba(88,28,135,0.07))"
+            _hl_section_bdr  = "rgba(124,58,237,0.22)"
+            _hl_card_bg      = "rgba(124,58,237,0.06)"
+            _hl_card_bdr     = "#7C3AED"
+            _hl_card_glow    = "0 0 0 1px rgba(124,58,237,0.18), 0 4px 18px rgba(124,58,237,0.12)"
+            _hl_phrase_color = "#5B21B6"
+            _hl_trans_color  = "#7C3AED"
+            _hl_tag_bg       = "rgba(124,58,237,0.10)"
+            _hl_tag_color    = "#7C3AED"
 
         # ── Section banner ──────────────────────────────────────
         _hl_loading = st.session_state.get("highlighted_summaries_loading", False)
@@ -2343,12 +2446,12 @@ elif st.session_state.current_page == "summary":
             <div style='position:absolute;top:0;left:0;right:0;height:2px;
                         background:linear-gradient(90deg,transparent,{_hl_card_bdr},transparent);opacity:0.6'></div>
             <div style='display:flex;align-items:center;gap:10px'>
-                <span style='font-size:1.1rem'>✦</span>
-                <span style='font-size:0.85rem;font-weight:700;color:{_hl_phrase_color};
+                <span style='width:8px;height:8px;background:{_hl_card_bdr};border-radius:2px;transform:rotate(45deg);flex-shrink:0'></span>
+                <span style='font-family:Outfit,sans-serif;font-size:0.82rem;font-weight:700;color:{_hl_phrase_color};
                              text-transform:uppercase;letter-spacing:2.5px'>Analyse des Phrases Clés</span>
-                <span style='background:{_hl_tag_bg};color:{_hl_tag_color};font-size:0.7rem;
-                             font-weight:700;padding:3px 10px;border-radius:20px;
-                             letter-spacing:0.5px'>{_loading_label}</span>
+                <span style='background:{_hl_tag_bg};color:{_hl_tag_color};font-size:0.68rem;
+                             font-weight:600;padding:3px 10px;border-radius:20px;
+                             letter-spacing:0.5px;font-family:Inter,sans-serif'>{_loading_label}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -2366,12 +2469,13 @@ elif st.session_state.current_page == "summary":
                         border-radius:12px;padding:18px 20px 14px;margin-bottom:6px;
                         box-shadow:{_hl_card_glow};position:relative'>
                 <div style='position:absolute;top:12px;right:14px;background:{_hl_tag_bg};
-                            color:{_hl_tag_color};font-size:0.65rem;font-weight:700;
-                            padding:2px 8px;border-radius:10px;letter-spacing:0.5px'>✦ {_rank}</div>
-                <div style='font-size:0.95rem;font-weight:600;color:{_hl_phrase_color};
-                            margin-bottom:5px;line-height:1.5;padding-right:44px'>{_orig}</div>
-                <div style='font-size:0.85rem;color:{_hl_trans_color};font-style:italic;
-                            line-height:1.5;opacity:0.85'>{_trad}</div>
+                            color:{_hl_tag_color};font-size:0.62rem;font-weight:700;
+                            padding:2px 8px;border-radius:10px;letter-spacing:0.5px;
+                            font-family:JetBrains Mono,monospace'># {_rank}</div>
+                <div style='font-family:Outfit,sans-serif;font-size:0.95rem;font-weight:600;color:{_hl_phrase_color};
+                            margin-bottom:5px;line-height:1.55;padding-right:44px'>{_orig}</div>
+                <div style='font-family:Inter,sans-serif;font-size:0.85rem;color:{_hl_trans_color};font-style:italic;
+                            line-height:1.55;opacity:0.85'>{_trad}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -2380,13 +2484,13 @@ elif st.session_state.current_page == "summary":
                 st.markdown(_analysis)
             elif _hl_loading:
                 st.markdown("""
-                <div style='padding:10px 4px 20px;color:#4a5570;font-size:0.85rem;
-                            font-style:italic'>⏳ Groq analyse cette phrase...</div>
+                <div style='padding:10px 4px 20px;color:var(--subtitle);font-size:0.82rem;
+                            font-style:italic;font-family:Inter,sans-serif'>Analyse en cours...</div>
                 """, unsafe_allow_html=True)
             else:
                 st.markdown("""
-                <div style='padding:8px 4px 18px;color:#4a5570;font-size:0.85rem;
-                            font-style:italic'>Aucune analyse disponible.</div>
+                <div style='padding:8px 4px 18px;color:var(--subtitle);font-size:0.82rem;
+                            font-style:italic;font-family:Inter,sans-serif'>Aucune analyse disponible.</div>
                 """, unsafe_allow_html=True)
 
             st.markdown("<div style='margin-bottom:14px'></div>", unsafe_allow_html=True)
