@@ -252,6 +252,28 @@ else:
     """
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
+_rec_css = ""
+if st.session_state.status_dict.get("running"):
+    _rec_css = """
+@keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.25}}
+.td-rec-btn .stButton > button {
+    border-color: rgba(239,68,68,0.35) !important;
+}
+.td-rec-btn .stButton > button::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    background: #EF4444;
+    border-radius: 50%;
+    box-shadow: 0 0 6px #EF4444, 0 0 14px rgba(239,68,68,0.35);
+    animation: td-rec-blink 1.2s ease-in-out infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+    position: relative;
+    top: -1px;
+}"""
+
 st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
@@ -643,25 +665,7 @@ st.markdown(f"""
      transform-origin:bottom center;
      transition: height 0.08s ease;}}
 
-{"""/* ── Recording indicator (active) ── */
-@keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.25}}
-.td-rec-btn .stButton > button {
-    border-color: rgba(239,68,68,0.35) !important;
-}
-.td-rec-btn .stButton > button::before {
-    content: '';
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    background: #EF4444;
-    border-radius: 50%;
-    box-shadow: 0 0 6px #EF4444, 0 0 14px rgba(239,68,68,0.35);
-    animation: td-rec-blink 1.2s ease-in-out infinite;
-    margin-right: 8px;
-    vertical-align: middle;
-    position: relative;
-    top: -1px;
-}""" if st.session_state.status_dict.get("running") else ""}}
+{_rec_css}
 </style>
 """, unsafe_allow_html=True)
 
