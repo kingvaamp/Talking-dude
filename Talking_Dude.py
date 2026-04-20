@@ -2133,8 +2133,27 @@ if st.session_state.current_page == "main":
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
-            st.markdown("<div style='display:flex;align-items:center;justify-content:center;gap:8px;padding:4px 0 2px'><span style='display:inline-block;width:8px;height:8px;background:#EF4444;border-radius:50%;box-shadow:0 0 8px #EF4444,0 0 16px rgba(239,68,68,0.4);animation:td-rec-blink 1.2s ease-in-out infinite'></span><span style='font-family:JetBrains Mono,monospace;font-size:0.7rem;color:#EF4444;font-weight:600;letter-spacing:1px'>REC</span></div><style>@keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.3}}</style>", unsafe_allow_html=True)
-            st.button("■ Arrêter", on_click=stop_translating, use_container_width=True)
+            st.markdown("""<style>
+            @keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.3}}
+            div[data-testid="column"]:first-child .stButton > button {
+                position: relative;
+                padding-left: 32px !important;
+            }
+            div[data-testid="column"]:first-child .stButton > button::before {
+                content: "";
+                position: absolute;
+                left: 14px;
+                top: 50%;
+                transform: translateY(-50%);
+                width: 8px;
+                height: 8px;
+                background: #EF4444;
+                border-radius: 50%;
+                box-shadow: 0 0 6px #EF4444, 0 0 12px rgba(239,68,68,0.35);
+                animation: td-rec-blink 1.2s ease-in-out infinite;
+            }
+            </style>""", unsafe_allow_html=True)
+            st.button("Arrêter", on_click=stop_translating, use_container_width=True)
     with col2:
         st.button("Effacer", on_click=clear_conversation, use_container_width=True)
     with col3:
