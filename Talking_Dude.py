@@ -2133,6 +2133,7 @@ if st.session_state.current_page == "main":
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
+            st.markdown("<div style='display:flex;align-items:center;justify-content:center;gap:8px;padding:4px 0 2px'><span style='display:inline-block;width:8px;height:8px;background:#EF4444;border-radius:50%;box-shadow:0 0 8px #EF4444,0 0 16px rgba(239,68,68,0.4);animation:td-rec-blink 1.2s ease-in-out infinite'></span><span style='font-family:JetBrains Mono,monospace;font-size:0.7rem;color:#EF4444;font-weight:600;letter-spacing:1px'>REC</span></div><style>@keyframes td-rec-blink{0%,100%{opacity:1}50%{opacity:0.3}}</style>", unsafe_allow_html=True)
             st.button("■ Arrêter", on_click=stop_translating, use_container_width=True)
     with col2:
         st.button("Effacer", on_click=clear_conversation, use_container_width=True)
@@ -2196,15 +2197,15 @@ if st.session_state.current_page == "main":
     else:
         _is_dark = st.session_state.theme == "dark"
 
-        # Theme-aware highlight colors — violet palette (inline styles — works on all devices)
+        # Theme-aware highlight colors — emerald green palette (inline styles — works on all devices)
         if _is_dark:
-            HL_CARD  = "background:rgba(167,139,250,0.12)!important;border-left:3px solid #A78BFA!important;box-shadow:0 0 0 2px rgba(167,139,250,0.20),0 4px 22px rgba(139,92,246,0.18);transform:translateX(3px);"
-            HL_ORIG  = "color:#C4B5FD;font-weight:600;"
-            HL_COLOR = "#A78BFA"
+            HL_CARD  = "background:rgba(16,185,129,0.12)!important;border-left:3px solid #34D399!important;box-shadow:0 0 0 2px rgba(16,185,129,0.22),0 4px 22px rgba(16,185,129,0.18);transform:translateX(3px);"
+            HL_ORIG  = "color:#6EE7B7;font-weight:600;"
+            HL_COLOR = "#34D399"
         else:
-            HL_CARD  = "background:rgba(139,92,246,0.10)!important;border-left:3px solid #7C3AED!important;box-shadow:0 0 0 2px rgba(124,58,237,0.20),0 4px 22px rgba(139,92,246,0.16);transform:translateX(3px);"
-            HL_ORIG  = "color:#5B21B6;font-weight:600;"
-            HL_COLOR = "#7C3AED"
+            HL_CARD  = "background:rgba(16,185,129,0.10)!important;border-left:3px solid #059669!important;box-shadow:0 0 0 2px rgba(5,150,105,0.22),0 4px 22px rgba(16,185,129,0.16);transform:translateX(3px);"
+            HL_ORIG  = "color:#065F46;font-weight:600;"
+            HL_COLOR = "#059669"
 
         for idx, item in enumerate(st.session_state.history[:60]):
             # BUG FIX: use the sentence's stable unique id for highlight tracking,
