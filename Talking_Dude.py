@@ -167,24 +167,24 @@ if st.session_state.theme == "dark":
         --header-bg: rgba(10, 14, 23, 0.92);
         --live-bg-1: rgba(15,20,35,0.92);
         --live-bg-2: rgba(20,28,50,0.82);
-        --live-border: rgba(99,102,241,0.18);
-        --live-title: #818CF8;
+        --live-border: rgba(14, 165, 233, 0.18);
+        --live-title: #38BDF8;
         --live-glow: 0 0 12px #EF4444, 0 0 24px rgba(249,115,22,0.35);
         --live-text: #F1F5F9;
         --ghost-text: 0.32;
-        --trans-text: #A5B4FC;
+        --trans-text: #0ea5e9;
         --hist-bg: rgba(255,255,255,0.03);
-        --hist-hover: rgba(255,255,255,0.055);
-        --hist-border: rgba(99,102,241,0.30);
+        --hist-hover: rgba(255,255,255,0.0555);
+        --hist-border: rgba(14, 165, 233, 0.30);
         --hist-orig: #E2E8F0;
-        --hist-trans: #A5B4FC;
+        --hist-trans: #0ea5e9;
         --hist-hl-bg: rgba(167,139,250,0.12);
         --hist-hl-border: #A78BFA;
         --hist-hl-glow: 0 0 0 2px rgba(167,139,250,0.20), 0 4px 20px rgba(139,92,246,0.18);
         --btn-bg: rgba(255,255,255,0.04);
         --btn-border: rgba(255,255,255,0.08);
-        --btn-hover: rgba(99,102,241,0.12);
-        --btn-hover-border: rgba(99,102,241,0.45);
+        --btn-hover: rgba(14, 165, 233, 0.12);
+        --btn-hover-border: rgba(14, 165, 233, 0.45);
         --btn-shadow: none;
         --btn-primary-bg: linear-gradient(135deg, #10B981, #34D399);
         --btn-primary-border: #10B981;
@@ -200,8 +200,8 @@ if st.session_state.theme == "dark":
         --input-text: #F1F5F9;
         --label-text: #CBD5E1;
         --toggle-icon: #34D399;
-        --accent: #6366F1;
-        --accent-light: #818CF8;
+        --accent: #0ea5e9;
+        --accent-light: #38BDF8;
         --highlight: #A78BFA;
         --highlight-light: #C4B5FD;
     """
@@ -212,25 +212,25 @@ else:
         --header-bg: rgba(248, 250, 252, 0.92);
         --live-bg-1: rgba(255,255,255,0.95);
         --live-bg-2: rgba(241,245,249,0.88);
-        --live-border: rgba(99,102,241,0.15);
-        --live-title: #4F46E5;
+        --live-border: rgba(2, 132, 199, 0.15);
+        --live-title: #0284C7;
         --live-glow: 0 0 10px #EF4444, 0 0 20px rgba(239,68,68,0.35);
         --live-text: #0F172A;
         --ghost-text: 0.40;
-        --trans-text: #4338CA;
+        --trans-text: #0284C7;
         --hist-bg: rgba(255,255,255,0.95);
         --hist-hover: rgba(241,245,249,1);
-        --hist-border: rgba(99,102,241,0.30);
+        --hist-border: rgba(2, 132, 199, 0.30);
         --hist-orig: #1E293B;
-        --hist-trans: #4338CA;
+        --hist-trans: #0284C7;
         --hist-hl-bg: rgba(139,92,246,0.08);
         --hist-hl-border: #7C3AED;
         --hist-hl-glow: 0 0 0 2px rgba(139,92,246,0.18), 0 4px 18px rgba(124,58,237,0.14);
         --btn-bg: #ffffff;
-        --btn-border: #CBD5E1;
-        --btn-hover: rgba(99,102,241,0.08);
-        --btn-hover-border: rgba(99,102,241,0.50);
-        --btn-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+        --btn-border: rgba(0,0,0,0.1);
+        --btn-hover: rgba(2, 132, 199, 0.08);
+        --btn-hover-border: rgba(2, 132, 199, 0.40);
+        --btn-shadow: 0 1px 2px rgba(0,0,0,0.05);
         --btn-primary-bg: linear-gradient(135deg, #10B981, #34D399);
         --btn-primary-border: #10B981;
         --btn-primary-hover: linear-gradient(135deg, #059669, #10B981);
@@ -245,35 +245,56 @@ else:
         --input-text: #0F172A;
         --label-text: #334155;
         --toggle-icon: #0F172A;
-        --accent: #4F46E5;
-        --accent-light: #6366F1;
+        --accent: #0284C7;
+        --accent-light: #0ea5e9;
         --highlight: #7C3AED;
         --highlight-light: #8B5CF6;
     """
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
-_rec_css = ""
+_rec_css = """
+/* The Marker Trick: Target the button block that immediately follows our hidden marker */
+[data-testid="stVerticalBlock"] > div:has(#td-controls-marker) + div [data-testid="column"]:first-child .stButton {
+    position: relative;
+}
+
+/* The Red Dot (Idle/Static) */
+[data-testid="stVerticalBlock"] > div:has(#td-controls-marker) + div [data-testid="column"]:first-child .stButton::before {
+    content: "";
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 10px;
+    height: 10px;
+    background: #EF4444;
+    border-radius: 50%;
+    z-index: 5;
+    pointer-events: none;
+}
+
+/* Make room inside the button */
+[data-testid="stVerticalBlock"] > div:has(#td-controls-marker) + div [data-testid="column"]:first-child button {
+    padding-left: 31px !important;
+}
+"""
+
 if st.session_state.status_dict.get("running"):
-    _rec_css = """
+    _rec_css += """
 @keyframes td-rec-blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
-[data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child .stButton > button {
+
+/* Active (Recording) Button Style */
+[data-testid="stVerticalBlock"] > div:has(#td-controls-marker) + div [data-testid="column"]:first-child button {
     border-color: rgba(239,68,68,0.40) !important;
     color: #EF4444 !important;
 }
-[data-testid="stHorizontalBlock"]:first-of-type > [data-testid="column"]:first-child .stButton > button::before {
-    content: '';
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    background: #EF4444;
-    border-radius: 50%;
+
+/* Blinking & Glowing REC Dot */
+[data-testid="stVerticalBlock"] > div:has(#td-controls-marker) + div [data-testid="column"]:first-child .stButton::before {
     box-shadow: 0 0 6px #EF4444, 0 0 14px rgba(239,68,68,0.35);
     animation: td-rec-blink 1.2s ease-in-out infinite;
-    margin-right: 8px;
-    vertical-align: middle;
-    position: relative;
-    top: -1px;
-}"""
+}
+"""
 
 st.markdown(f"""
 <style>
@@ -376,6 +397,7 @@ st.markdown(f"""
         font-size: 1.4rem;
         font-weight: 500;
         color: var(--trans-text);
+        text-shadow: 0 0 10px rgba(14, 165, 233, 0.5);
         margin-top: 18px;
         padding-top: 18px;
         border-top: 1px solid var(--sb-border);
@@ -438,28 +460,32 @@ st.markdown(f"""
         font-family: 'Inter', sans-serif;
         font-size: 1.15rem;
         color: var(--hist-trans);
+        text-shadow: 0 0 6px rgba(14, 165, 233, 0.3);
         font-style: italic;
         line-height: 1.55;
-        opacity: 0.92;
+        opacity: 1;
     }}
 
     /* ── Buttons ── */
-    .stButton > button,
-    .stDownloadButton > button {{
-        border-radius: 10px;
-        border: 1px solid var(--btn-border);
+    /* ── Standard Buttons ── */
+    .stButton button,
+    .stDownloadButton button,
+    [data-testid="baseButton-secondary"],
+    [data-testid="baseButton-secondary"]:active,
+    [data-testid="baseButton-secondary"]:visited {{
+        border-radius: 10px !important;
+        border: 1px solid var(--btn-border) !important;
+        background-color: var(--btn-bg) !important;
         background: var(--btn-bg) !important;
         color: var(--text-main) !important;
-        font-weight: 600;
-        font-family: 'Inter', sans-serif;
-        letter-spacing: 0.01em;
-        transition: transform 160ms var(--ease-out-strong),
-                    background 200ms ease,
-                    border-color 200ms ease,
-                    box-shadow 200ms ease;
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-        box-shadow: var(--btn-shadow);
+        font-weight: 500 !important;
+        font-family: 'Inter', sans-serif !important;
+        letter-spacing: 0.01em !important;
+        padding: 0.25rem 0.75rem !important;
+        transition: all 200ms var(--ease-out-strong) !important;
+        backdrop-filter: blur(8px) !important;
+        -webkit-backdrop-filter: blur(8px) !important;
+        box-shadow: var(--btn-shadow) !important;
     }}
     .stButton > button:active,
     .stDownloadButton > button:active {{
@@ -2137,7 +2163,7 @@ if st.session_state.summary_loading and not st.session_state.summary:
 if st.session_state.current_page == "main":
 
     # ── Control buttons ───────────────────────────────────────
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div id="td-controls-marker"></div>', unsafe_allow_html=True)
     col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
     with col1:
         if not st.session_state.status_dict["running"]:
@@ -2145,7 +2171,7 @@ if st.session_state.current_page == "main":
             _start_help = None if not _start_disabled else (
                 "Clé Deepgram requise" if not DG_API_KEY else "BlackHole introuvable — installe BlackHole 2ch"
             )
-            st.button("▶ Démarrer", on_click=start_translating,
+            st.button("Démarrer", on_click=start_translating,
                       args=(selected_device_name, DG_MODEL, source_lang_code, target_lang_code, glossary_list, glossary_trans_list),
                       use_container_width=True, disabled=_start_disabled, help=_start_help)
         else:
@@ -2214,12 +2240,12 @@ if st.session_state.current_page == "main":
 
         # Theme-aware highlight colors — emerald green palette (inline styles — works on all devices)
         if _is_dark:
-            HL_CARD  = "background:rgba(16,185,129,0.12)!important;border-left:3px solid #34D399!important;box-shadow:0 0 0 2px rgba(16,185,129,0.22),0 4px 22px rgba(16,185,129,0.18);transform:translateX(3px);"
+            HL_CARD  = "background:rgba(16,185,129,0.30)!important;border-left:5px solid #10B981!important;box-shadow:0 0 15px rgba(16,185,129,0.35), 0 8px 32px rgba(0,0,0,0.35);transform:translateX(5px);"
             HL_ORIG  = "color:#6EE7B7;font-weight:600;"
             HL_COLOR = "#34D399"
         else:
-            HL_CARD  = "background:rgba(16,185,129,0.10)!important;border-left:3px solid #059669!important;box-shadow:0 0 0 2px rgba(5,150,105,0.22),0 4px 22px rgba(16,185,129,0.16);transform:translateX(3px);"
-            HL_ORIG  = "color:#065F46;font-weight:600;"
+            HL_CARD  = "background:rgba(52,211,153,0.25)!important;border-left:5px solid #059669!important;box-shadow:0 0 15px rgba(16,185,129,0.30), 0 6px 24px rgba(16,185,129,0.20);transform:translateX(5px);"
+            HL_ORIG  = "color:#064E3B;font-weight:700;"
             HL_COLOR = "#059669"
 
         for idx, item in enumerate(st.session_state.history[:60]):
@@ -2232,7 +2258,7 @@ if st.session_state.current_page == "main":
 
             card_style = HL_CARD if is_hl else ""
             orig_style = HL_ORIG if is_hl else ""
-            sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%) rotate(45deg);width:10px;height:10px;background:{HL_COLOR};border-radius:2px;opacity:0.7"></span>' if is_hl else ""
+            sparkle    = f'<span style="position:absolute;right:14px;top:50%;transform:translateY(-50%) rotate(45deg);width:12px;height:12px;background:{HL_COLOR};border-radius:2px;box-shadow:0 0 8px {HL_COLOR};opacity:1.0"></span>' if is_hl else ""
 
             col_card, col_btn = st.columns([11, 1])
             with col_card:

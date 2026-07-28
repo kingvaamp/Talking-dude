@@ -4,6 +4,7 @@ import time
 import os
 import signal
 import sys
+import multiprocessing
 
 # Configuration
 STREAMLIT_FILE = "Talking_Dude.py"
@@ -16,15 +17,20 @@ def start_streamlit():
     time.sleep(0.5)
 
     print(f"🚀 Lancement de Streamlit ({STREAMLIT_FILE})...")
-    # Utiliser sys.executable pour plus de robustesse
-    python_exe = sys.executable
-    return subprocess.Popen([
-        python_exe, "-m", "streamlit", "run", STREAMLIT_FILE,
-        "--server.port", str(PORT),
-        "--server.headless", "true",
-        "--server.runOnSave", "true",
-        "--browser.gatherUsageStats", "false"
-    ])
+    
+    if getattr(sys, 'frozen', False):
+        # We are running as a PyInstaller bundle
+        return subprocess.Popen([sys.executable, "run_streamlit"])
+    else:
+        # We are running from normal python
+        python_exe = sys.executable
+        return subprocess.Popen([
+            python_exe, "-m", "streamlit", "run", STREAMLIT_FILE,
+            "--server.port", str(PORT),
+            "--server.headless", "true",
+            "--server.runOnSave", "true",
+            "--browser.gatherUsageStats", "false"
+        ])
 
 def main():
     proc = None
@@ -56,8 +62,26 @@ def main():
         # 5. Nettoyage à la fermeture
         if proc:
             print("🛑 Fermeture du serveur Streamlit...")
-            os.kill(proc.pid, signal.SIGTERM)
+            proc.terminate()
             sys.exit(0)
 
 if __name__ == "__main__":
-    main()
+    multiprocessing.freeze_support()
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "run_streamlit":
+        # Internal Streamlit launcher for PyInstaller
+        import streamlit.web.cli as stcli
+        
+        if getattr(sys, 'frozen', False):
+            base_path = sys._MEIPASS
+        else:
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            
+        script_path = os.path.join(base_path, "Talking_Dude.py")
+        sys.argv = ["streamlit", "run", script_path, 
+                    "--server.port", str(PORT), 
+                    "--server.headless", "true",
+                    "--browser.gatherUsageStats", "false"]
+        sys.exit(stcli.main())
+    else:
+        main()

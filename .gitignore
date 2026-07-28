@@ -4,3 +4,8 @@ __pycache__/
 *.bak
 Icon?
 settings.json
+.venv/
+
+# Build PyInstaller (998 Mo, reconstructible)
+dist/
+build/
